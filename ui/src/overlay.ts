@@ -6,6 +6,7 @@ const canvas = document.querySelector("canvas")!;
 const ctx = canvas.getContext("2d")!;
 const size = document.getElementById("size")!;
 const hint = document.getElementById("hint")!;
+const bar = document.getElementById("bar")!;
 
 let done = false;
 const finish = () => {
@@ -21,7 +22,7 @@ canvas.height = img.naturalHeight;
 // Image pixels per CSS pixel; covers any DPI without asking the OS.
 const scale = () => img.naturalWidth / window.innerWidth;
 
-function draw(a?: Point, b?: Point, color = "#2f6fde") {
+function draw(a?: Point, b?: Point) {
   ctx.drawImage(img, 0, 0);
   ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -30,17 +31,20 @@ function draw(a?: Point, b?: Point, color = "#2f6fde") {
   const x = Math.min(a.x, b.x) * s, y = Math.min(a.y, b.y) * s;
   const w = Math.abs(a.x - b.x) * s, h = Math.abs(a.y - b.y) * s;
   ctx.drawImage(img, x, y, w, h, x, y, w, h);
-  ctx.strokeStyle = color;
+  ctx.strokeStyle = "#2f6fde";
   ctx.lineWidth = 2 * s;
   ctx.strokeRect(x - s, y - s, w + 2 * s, h + 2 * s);
 }
 draw();
 
 let start: Point | null = null;
+let picked: ReturnType<typeof cropRect> = null;
 canvas.addEventListener("pointerdown", (e) => {
   if (e.button !== 0 || done) return;
   canvas.setPointerCapture(e.pointerId);
   start = { x: e.clientX, y: e.clientY };
+  picked = null;
+  bar.hidden = true;
   hint.hidden = true;
 });
 canvas.addEventListener("pointermove", (e) => {
@@ -55,17 +59,29 @@ canvas.addEventListener("pointermove", (e) => {
     size.style.top = `${Math.max(0, Math.min(start.y, p.y) - 26)}px`;
   }
 });
-canvas.addEventListener("pointerup", async (e) => {
+canvas.addEventListener("pointerup", (e) => {
   if (!start) return;
   const end = { x: e.clientX, y: e.clientY };
-  const r = cropRect(start, end, scale(), img.naturalWidth, img.naturalHeight);
   const from = start;
   start = null;
-  if (!r) return finish();
+  picked = cropRect(from, end, scale(), img.naturalWidth, img.naturalHeight);
+  if (!picked) {
+    draw();
+    size.hidden = true;
+    hint.hidden = false;
+    return;
+  }
+  bar.hidden = false;
+  const right = Math.max(from.x, end.x), bottom = Math.max(from.y, end.y);
+  bar.style.left = `${Math.max(8, Math.min(right, window.innerWidth - 8) - bar.offsetWidth)}px`;
+  bar.style.top = `${bottom + 52 > window.innerHeight ? bottom - 44 : bottom + 8}px`;
+});
+
+async function submit() {
+  if (!picked || done) return;
+  const r = picked;
   done = true;
-  draw(from, end, "#1f9d55");
-  size.textContent = `캡처됨 · ${r.w} × ${r.h}`;
-  await new Promise((ok) => setTimeout(ok, 400));
+  bar.hidden = true;
   const out = new OffscreenCanvas(r.w, r.h);
   out.getContext("2d")!.drawImage(img, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
   const body = await out.convertToBlob({ type: "image/png" });
@@ -73,11 +89,14 @@ canvas.addEventListener("pointerup", async (e) => {
   if (res?.ok) return finish();
   hint.textContent = `저장 실패: ${res ? await res.text() : "로컬 서버에 연결할 수 없음"} · Esc로 닫기`;
   hint.hidden = false;
-});
+}
+document.getElementById("ok")!.addEventListener("click", submit);
+document.getElementById("cancel")!.addEventListener("click", finish);
 canvas.addEventListener("contextmenu", (e) => {
   e.preventDefault();
   finish();
 });
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") finish();
+  if (e.key === "Enter") submit();
 });

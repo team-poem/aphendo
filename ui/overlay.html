@@ -16,13 +16,17 @@
         pointer-events: none;
       }
       #hint { top: 16px; left: 50%; transform: translateX(-50%); font-size: 13px; padding: 6px 12px; }
-      #size[hidden] { display: none; }
+      #size[hidden], #bar[hidden] { display: none; }
+      #bar { position: fixed; display: flex; gap: 6px; padding: 4px; background: #fff; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.35); cursor: default; }
+      #bar button { font: 13px "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif; border: 0; border-radius: 6px; padding: 6px 12px; cursor: pointer; background: #eef0f3; color: #222; }
+      #bar #ok { background: #2f6fde; color: #fff; font-weight: 600; }
     </style>
   </head>
   <body>
     <canvas></canvas>
-    <div id="hint">끌어서 영역 선택 · Esc 또는 우클릭으로 취소</div>
+    <div id="hint">끌어서 영역 선택 → 완료 · 다시 끌면 새로 선택 · Esc 취소</div>
     <div id="size" hidden></div>
+    <div id="bar" hidden><button id="cancel">취소</button><button id="ok">완료 (Enter)</button></div>
     <script type="module" src="/src/overlay.ts"></script>
   </body>
 </html>
