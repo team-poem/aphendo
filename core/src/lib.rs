@@ -6,6 +6,7 @@ use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
+use serde::Deserialize;
 use axum::{Json, Router};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,10 +46,12 @@ pub fn router(dir: PathBuf) -> std::io::Result<Router> {
             ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"]
                 .map(HeaderValue::from_static),
         )
-        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE])
         .allow_headers([header::CONTENT_TYPE]);
     Ok(Router::new()
         .route("/api/state", get(get_state))
+        .route("/api/config", get(get_config).put(put_config))
+        .route("/api/config/test", post(test_config))
         .route("/api/captures", post(post_capture))
         .route("/api/captures/{id}/image", get(capture_image))
         .route("/api/captures/{id}/retry", post(retry_capture))
@@ -114,6 +117,48 @@ async fn retry_capture(State(app): State<App>, Path(id): Path<String>) -> ApiRes
     }
 }
 
+/// What the settings dialog may see: never the token itself.
+#[derive(serde::Serialize)]
+struct ConfigView {
+    mcp_url: Option<String>,
+    has_token: bool,
+}
+
+async fn get_config(State(app): State<App>) -> ApiResult {
+    let cfg = remote::Config::load(&app.dir).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(ConfigView { mcp_url: cfg.mcp_url, has_token: cfg.mcp_token.is_some() }).into_response())
+}
+
+#[derive(Deserialize)]
+struct ConfigPut {
+    mcp_url: String,
+    mcp_token: Option<String>,
+}
+
+async fn put_config(State(app): State<App>, Json(p): Json<ConfigPut>) -> ApiResult {
+    remote::Config::save(&app.dir, &p.mcp_url, p.mcp_token).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    get_config(State(app)).await
+}
+
+/// Unsaved form values override the stored config, so the dialog can check before saving.
+#[derive(Deserialize, Default)]
+struct ConfigTest {
+    mcp_url: Option<String>,
+    mcp_token: Option<String>,
+}
+
+async fn test_config(State(app): State<App>, body: Option<Json<ConfigTest>>) -> ApiResult {
+    let t = body.map(|Json(t)| t).unwrap_or_default();
+    let mut cfg = remote::Config::load(&app.dir).unwrap_or_default();
+    if let Some(url) = t.mcp_url.filter(|u| !u.trim().is_empty()) {
+        cfg.mcp_url = Some(remote::validate_url(&url).map_err(|e| (StatusCode::BAD_REQUEST, e))?);
+    }
+    if let Some(token) = t.mcp_token.filter(|t| !t.trim().is_empty()) {
+        cfg.mcp_token = Some(token.trim().to_string());
+    }
+    Ok(Json(remote::probe(&cfg).await).into_response())
+}
+
 #[derive(serde::Deserialize)]
 struct DonePatch {
     done: bool,
@@ -158,6 +203,39 @@ mod tests {
     use axum::body::{to_bytes, Body};
     use axum::http::{header, Request, StatusCode};
     use tower::ServiceExt;
+
+    async fn send(app: &axum::Router, req: Request<Body>) -> (StatusCode, String) {
+        let res = app.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        (status, String::from_utf8(to_bytes(res.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap())
+    }
+
+    fn put(body: &str) -> Request<Body> {
+        Request::put("/api/config").header(header::CONTENT_TYPE, "application/json").body(Body::from(body.to_string())).unwrap()
+    }
+
+    #[tokio::test]
+    async fn config_round_trips_and_never_returns_the_token() {
+        let dir = std::env::temp_dir().join(format!("ct-cfg-{}", super::store::new_id()));
+        let app = super::router(dir.clone()).unwrap();
+        let get = || Request::get("/api/config").body(Body::empty()).unwrap();
+
+        let (s, body) = send(&app, put(r#"{"mcp_url":"https://mcp.example/mcp","mcp_token":"s3cret-tok"}"#)).await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        let (_, body) = send(&app, get()).await;
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap(), serde_json::json!({"mcp_url":"https://mcp.example/mcp","has_token":true}));
+        assert!(!body.contains("s3cret-tok"), "GET must not leak the token");
+
+        send(&app, put(r#"{"mcp_url":"http://127.0.0.1:8787/mcp"}"#)).await;
+        let saved = super::remote::Config::load(&dir).unwrap();
+        assert_eq!(saved.mcp_url.as_deref(), Some("http://127.0.0.1:8787/mcp"));
+        assert_eq!(saved.mcp_token.as_deref(), Some("s3cret-tok"), "omitted token is kept");
+
+        for bad in [r#"{"mcp_url":"ftp://x/mcp"}"#, r#"{"mcp_url":"not a url"}"#] {
+            assert_eq!(send(&app, put(bad)).await.0, StatusCode::BAD_REQUEST, "{bad}");
+        }
+        assert_eq!(super::remote::Config::load(&dir).unwrap().mcp_url.as_deref(), Some("http://127.0.0.1:8787/mcp"), "rejected PUT leaves config alone");
+    }
 
     #[tokio::test]
     async fn capture_image_serves_stored_bytes_and_404s_unknown() {
