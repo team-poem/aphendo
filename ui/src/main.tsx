@@ -2,8 +2,9 @@ import { StrictMode, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { format, isSameDay, parse, startOfToday } from "date-fns";
 import { ko } from "date-fns/locale";
-import { X } from "lucide-react";
+import { Settings as Gear, X } from "lucide-react";
 import { API } from "./api";
+import { configured, fetchConfig, Settings, type ConfigView } from "./settings";
 import { FullScreenCalendar, type CalendarData } from "@/components/ui/fullscreen-calendar";
 import { cn } from "@/lib/utils";
 
@@ -175,12 +176,15 @@ function CaptureView({ c, todos, onClose }: { c: Capture; todos: Todo[]; onClose
 }
 
 // Wide: lives atop the side panel so the calendar gets the full window height. Narrow: atop everything.
-function TitleBar({ open, className }: { open: number; className: string }) {
+function TitleBar({ open, className, onSettings }: { open: number; className: string; onSettings: () => void }) {
   return (
     <header data-tauri-drag-region className={cn("flex h-9 shrink-0 select-none items-center gap-2 border-b border-white/[0.06] px-3", className)}>
       <h1 data-tauri-drag-region className="flex-1 text-sm font-semibold">
         할일 캡처 {open > 0 && <span className="ml-1 rounded-full bg-orange-500 px-1.5 text-xs text-white">{open}</span>}
       </h1>
+      <button className="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white" title="설정" onClick={onSettings}>
+        <Gear size={15} />
+      </button>
       {tauri && (
         <button className="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white" title="닫기" onClick={() => tauri.window.getCurrentWindow().close()}>
           <X size={16} />
@@ -196,7 +200,16 @@ function App() {
   const [selected, setSelected] = useState(startOfToday);
   const [viewing, setViewing] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [config, setConfig] = useState<ConfigView | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   setMsg = setMsgState;
+
+  useEffect(() => {
+    fetchConfig().then((c) => {
+      setConfig(c);
+      if (c && !configured(c)) setSettingsOpen(true);
+    });
+  }, []);
 
   useEffect(() => {
     let last = "";
@@ -252,7 +265,7 @@ function App() {
 
   return (
     <div className="relative flex h-full flex-col">
-      <TitleBar open={open} className="md:hidden" />
+      <TitleBar open={open} className="md:hidden" onSettings={() => setSettingsOpen(true)} />
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
         <div className="flex shrink-0 flex-col md:min-w-0 md:flex-1 md:overflow-y-auto">
@@ -265,7 +278,12 @@ function App() {
         </div>
 
         <aside className="border-white/[0.06] md:w-80 md:shrink-0 md:overflow-y-auto md:border-l">
-          <TitleBar open={open} className="hidden md:flex" />
+          <TitleBar open={open} className="hidden md:flex" onSettings={() => setSettingsOpen(true)} />
+          {config && !configured(config) && (
+            <button className="block w-full border-b border-white/[0.06] bg-orange-500/10 p-3 text-left text-xs text-orange-300 light:text-orange-700 hover:bg-orange-500/20" onClick={() => setSettingsOpen(true)}>
+              {config.mcp_url ? "토큰이 없어 캡처를 분석할 수 없습니다." : "MCP 서버 주소가 없어 캡처를 분석할 수 없습니다."} ⚙ 설정을 눌러 입력하세요.
+            </button>
+          )}
           <section className="border-b border-white/[0.06] p-3">
             <p className="mb-2 text-xs text-white/40">
               {tauri ? "Alt+Shift+S 또는 캡처 버튼으로 영역 캡처. 다른 도구로 찍었다면 Ctrl+V, 이미지 파일은 끌어다 놓기." : "캡처한 이미지를 Ctrl+V 하거나 이미지 파일을 끌어다 놓으면 할일을 뽑습니다."}
@@ -295,6 +313,7 @@ function App() {
       </div>
 
       {view && <CaptureView c={view} todos={state.todos.filter((t) => t.capture_id === view.id)} onClose={() => setViewing(null)} />}
+      {settingsOpen && <Settings config={config} onClose={() => setSettingsOpen(false)} onSaved={setConfig} />}
       {dragging && (
         <div className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-md border-2 border-dashed border-orange-500/60 bg-orange-500/[0.06] text-sm text-orange-300">
           여기에 놓으면 분석합니다
