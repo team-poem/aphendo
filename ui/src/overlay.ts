@@ -21,18 +21,18 @@ canvas.height = img.naturalHeight;
 // Image pixels per CSS pixel; covers any DPI without asking the OS.
 const scale = () => img.naturalWidth / window.innerWidth;
 
-function draw(a?: Point, b?: Point) {
+function draw(a?: Point, b?: Point, color = "#2f6fde") {
   ctx.drawImage(img, 0, 0);
-  ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+  ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   if (!a || !b) return;
   const s = scale();
   const x = Math.min(a.x, b.x) * s, y = Math.min(a.y, b.y) * s;
   const w = Math.abs(a.x - b.x) * s, h = Math.abs(a.y - b.y) * s;
   ctx.drawImage(img, x, y, w, h, x, y, w, h);
-  ctx.strokeStyle = "#2f6fde";
-  ctx.lineWidth = Math.max(1, s);
-  ctx.strokeRect(x, y, w, h);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2 * s;
+  ctx.strokeRect(x - s, y - s, w + 2 * s, h + 2 * s);
 }
 draw();
 
@@ -57,10 +57,15 @@ canvas.addEventListener("pointermove", (e) => {
 });
 canvas.addEventListener("pointerup", async (e) => {
   if (!start) return;
-  const r = cropRect(start, { x: e.clientX, y: e.clientY }, scale(), img.naturalWidth, img.naturalHeight);
+  const end = { x: e.clientX, y: e.clientY };
+  const r = cropRect(start, end, scale(), img.naturalWidth, img.naturalHeight);
+  const from = start;
   start = null;
   if (!r) return finish();
   done = true;
+  draw(from, end, "#1f9d55");
+  size.textContent = `캡처됨 · ${r.w} × ${r.h}`;
+  await new Promise((ok) => setTimeout(ok, 400));
   const out = new OffscreenCanvas(r.w, r.h);
   out.getContext("2d")!.drawImage(img, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
   const body = await out.convertToBlob({ type: "image/png" });
