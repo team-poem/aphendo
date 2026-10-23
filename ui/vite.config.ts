@@ -1,9 +1,12 @@
 import { defineConfig } from "vite";
+import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
 
 const page = (name: string) => fileURLToPath(new URL(name, import.meta.url));
 
 export default defineConfig({
+  plugins: [tailwindcss()],
+  resolve: { alias: { "@": page("src") } },
   server: { port: 5173, strictPort: true, proxy: { "/api": "http://127.0.0.1:47321" } },
   build: {
     outDir: "dist",

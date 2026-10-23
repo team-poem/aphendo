@@ -1,25 +1,13 @@
 <!doctype html>
-<html lang="ko">
+<html lang="ko" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>할일 캡처</title>
-    <link rel="stylesheet" href="/src/style.css" />
+    <link rel="stylesheet" href="/src/index.css" />
   </head>
   <body>
-    <header data-tauri-drag-region>
-      <h1 data-tauri-drag-region>할일 캡처 <span id="count"></span></h1>
-      <button id="snip" title="화면 캡처 (Alt+Shift+S)" hidden>📷</button>
-      <button id="close" title="닫기" hidden>×</button>
-    </header>
-    <section id="drop">
-      <strong>Win+Shift+S</strong> 로 캡처한 뒤 여기서 <strong>Ctrl+V</strong><br />
-      <small>이미지 파일을 끌어다 놓아도 됩니다</small>
-    </section>
-    <div id="captures"></div>
-    <main id="todos"></main>
-    <section id="view" hidden></section>
-    <footer id="msg"></footer>
-    <script type="module" src="/src/main.ts"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
