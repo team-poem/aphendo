@@ -14,13 +14,13 @@ const finish = () => {
   invoke("finish_snip");
 };
 
-const img = new Image();
-img.src = URL.createObjectURL(new Blob([await invoke<ArrayBuffer>("frozen_image")], { type: "image/png" }));
-await img.decode();
-canvas.width = img.naturalWidth;
-canvas.height = img.naturalHeight;
+const raw = await invoke<ArrayBuffer>("frozen_image");
+const [fw, fh] = new Uint32Array(raw, 0, 2);
+const img = await createImageBitmap(new ImageData(new Uint8ClampedArray(raw, 8), fw, fh));
+canvas.width = img.width;
+canvas.height = img.height;
 // Image pixels per CSS pixel; covers any DPI without asking the OS.
-const scale = () => img.naturalWidth / window.innerWidth;
+const scale = () => img.width / window.innerWidth;
 
 function draw(a?: Point, b?: Point) {
   ctx.drawImage(img, 0, 0);
@@ -51,7 +51,7 @@ canvas.addEventListener("pointermove", (e) => {
   if (!start) return;
   const p = { x: e.clientX, y: e.clientY };
   draw(start, p);
-  const r = cropRect(start, p, scale(), img.naturalWidth, img.naturalHeight);
+  const r = cropRect(start, p, scale(), img.width, img.height);
   size.hidden = !r;
   if (r) {
     size.textContent = `${r.w} × ${r.h}`;
@@ -64,7 +64,7 @@ canvas.addEventListener("pointerup", (e) => {
   const end = { x: e.clientX, y: e.clientY };
   const from = start;
   start = null;
-  picked = cropRect(from, end, scale(), img.naturalWidth, img.naturalHeight);
+  picked = cropRect(from, end, scale(), img.width, img.height);
   if (!picked) {
     draw();
     size.hidden = true;
