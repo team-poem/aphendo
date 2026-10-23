@@ -9,6 +9,7 @@
   <body>
     <header data-tauri-drag-region>
       <h1 data-tauri-drag-region>할일 캡처 <span id="count"></span></h1>
+      <button id="snip" title="화면 캡처 (Alt+Shift+S)" hidden>📷</button>
       <button id="close" title="닫기" hidden>×</button>
     </header>
     <section id="drop">
@@ -17,6 +18,7 @@
     </section>
     <div id="captures"></div>
     <main id="todos"></main>
+    <section id="view" hidden></section>
     <footer id="msg"></footer>
     <script type="module" src="/src/main.ts"></script>
   </body>

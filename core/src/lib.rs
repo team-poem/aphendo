@@ -99,7 +99,9 @@ async fn capture_image(State(app): State<App>, Path(id): Path<String>) -> ApiRes
         return Err((StatusCode::NOT_FOUND, "없는 캡처".into()));
     };
     let bytes = tokio::fs::read(app.dir.join("images").join(&image)).await.map_err(internal)?;
-    Ok(([(header::CONTENT_TYPE, mime_for(&image))], bytes).into_response())
+    // Stored images never change, so the gallery's re-renders hit the cache.
+    let cache = (header::CACHE_CONTROL, "max-age=31536000, immutable");
+    Ok(([(header::CONTENT_TYPE, mime_for(&image)), cache], bytes).into_response())
 }
 
 async fn retry_capture(State(app): State<App>, Path(id): Path<String>) -> ApiResult {

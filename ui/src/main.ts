@@ -52,17 +52,75 @@ function dueLabel(due: string): string {
   return `${d.getMonth() + 1}/${d.getDate()} (${"일월화수목금토"[d.getDay()]})`;
 }
 
+const imageUrl = (c: Capture) => `${API}/api/captures/${c.id}/image`;
+
 function chip(c: Capture): HTMLElement {
   const s = c.status;
   const el = document.createElement(s.kind === "failed" ? "button" : "span");
   el.className = `chip ${s.kind}`;
   el.textContent = { queued: "대기", running: "분석중…", done: `완료 ${"added" in s ? s.added : 0}개`, failed: "실패 · 재시도" }[s.kind];
   el.title = `${new Date(c.created_at).toLocaleTimeString("ko-KR")}${s.kind === "failed" ? `\n${s.error}` : ""}`;
-  if (s.kind === "failed") el.onclick = () => call(`/api/captures/${c.id}/retry`, { method: "POST" });
+  if (s.kind === "failed")
+    el.onclick = (e) => {
+      e.stopPropagation();
+      call(`/api/captures/${c.id}/retry`, { method: "POST" });
+    };
   return el;
 }
 
-function todoRow(t: Todo): HTMLElement {
+function thumb(c: Capture): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "thumb";
+  el.title = "크게 보기";
+  const img = document.createElement("img");
+  img.src = imageUrl(c);
+  img.alt = "";
+  img.onerror = () => img.remove();
+  el.append(img, chip(c));
+  el.onclick = () => openView(c.id);
+  return el;
+}
+
+// The capture shown in the enlarged view, or null for the todo list.
+let viewing: string | null = null;
+let current: State = { captures: [], todos: [] };
+
+function openView(id: string | null) {
+  viewing = id;
+  last = "";
+  render(current);
+}
+
+function renderView(state: State) {
+  const view = $("view");
+  const c = viewing && state.captures.find((c) => c.id === viewing);
+  view.hidden = !c;
+  document.body.classList.toggle("viewing", !!c);
+  if (!c) return;
+  const back = document.createElement("button");
+  back.className = "back";
+  back.textContent = "← 목록";
+  back.onclick = () => openView(null);
+  const when = document.createElement("span");
+  when.className = "when";
+  when.textContent = new Date(c.created_at).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" });
+  const bar = document.createElement("div");
+  bar.className = "bar";
+  bar.append(back, when, chip(c));
+  const img = document.createElement("img");
+  img.className = "big";
+  img.src = imageUrl(c);
+  img.alt = "캡처 이미지";
+  img.onclick = () => img.classList.toggle("full");
+  const todos = state.todos.filter((t) => t.capture_id === c.id);
+  const ul = document.createElement("ul");
+  ul.append(...todos.map((t) => todoRow(t, false)));
+  const h = document.createElement("h2");
+  h.textContent = todos.length ? `이 캡처의 할일 ${todos.length}` : "이 캡처에서 나온 할일이 없습니다";
+  view.replaceChildren(bar, img, h, ul);
+}
+
+function todoRow(t: Todo, withSource = true): HTMLElement {
   const li = document.createElement("li");
   li.className = t.done ? "done" : "";
   const box = document.createElement("input");
@@ -92,7 +150,14 @@ function todoRow(t: Todo): HTMLElement {
   del.title = "삭제";
   del.textContent = "×";
   del.onclick = () => call(`/api/todos/${t.id}`, { method: "DELETE" });
-  li.append(box, text, del);
+  if (withSource) {
+    const src = document.createElement("button");
+    src.className = "src";
+    src.title = "원본 캡처 보기";
+    src.textContent = "원본";
+    src.onclick = () => openView(t.capture_id);
+    li.append(box, text, src, del);
+  } else li.append(box, text, del);
   return li;
 }
 
@@ -101,8 +166,10 @@ function render(state: State) {
   const key = JSON.stringify(state) + ymd(new Date());
   if (key === last) return;
   last = key;
+  current = state;
 
-  $("captures").replaceChildren(...[...state.captures].reverse().slice(0, 8).map(chip));
+  $("captures").replaceChildren(...[...state.captures].reverse().map(thumb));
+  renderView(state);
   const open = state.todos.filter((t) => !t.done).length;
   $("count").textContent = open ? String(open) : "";
 
@@ -116,7 +183,7 @@ function render(state: State) {
     const h = document.createElement("h2");
     h.textContent = `${g} ${items.length}`;
     const ul = document.createElement("ul");
-    ul.append(...items.map(todoRow));
+    ul.append(...items.map((t) => todoRow(t)));
     sec.append(h, ul);
     return sec;
   });
