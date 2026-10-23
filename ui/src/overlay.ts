@@ -1,7 +1,14 @@
 import { API } from "./api";
 import { cropRect, type Point } from "./crop";
 
-const { invoke } = (window as unknown as { __TAURI__: { core: { invoke<T>(cmd: string): Promise<T> } } }).__TAURI__.core;
+type Tauri = {
+  core: { invoke<T>(cmd: string): Promise<T> };
+  event: { emit(name: string, payload: string): Promise<void>; listen(name: string, cb: (e: { payload: string }) => void): Promise<unknown> };
+  window: { getCurrentWindow(): { label: string } };
+};
+const tauri = (window as unknown as { __TAURI__: Tauri }).__TAURI__;
+const { invoke } = tauri.core;
+const me = tauri.window.getCurrentWindow().label;
 const canvas = document.querySelector("canvas")!;
 const ctx = canvas.getContext("2d")!;
 const size = document.getElementById("size")!;
@@ -45,7 +52,14 @@ canvas.addEventListener("pointerdown", (e) => {
   start = { x: e.clientX, y: e.clientY };
   picked = null;
   bar.hidden = true;
-  hint.hidden = true;
+  tauri.event.emit("snip-select", me);
+});
+// One selection across all monitors: starting a drag elsewhere clears this one.
+tauri.event.listen("snip-select", ({ payload }) => {
+  if (payload === me || done) return;
+  start = picked = null;
+  bar.hidden = size.hidden = true;
+  draw();
 });
 canvas.addEventListener("pointermove", (e) => {
   if (!start) return;
@@ -68,7 +82,6 @@ canvas.addEventListener("pointerup", (e) => {
   if (!picked) {
     draw();
     size.hidden = true;
-    hint.hidden = false;
     return;
   }
   bar.hidden = false;
@@ -87,11 +100,11 @@ async function submit() {
   const body = await out.convertToBlob({ type: "image/png" });
   const res = await fetch(`${API}/api/captures`, { method: "POST", headers: { "Content-Type": "image/png" }, body }).catch(() => null);
   if (res?.ok) return finish();
-  hint.textContent = `저장 실패: ${res ? await res.text() : "로컬 서버에 연결할 수 없음"} · Esc로 닫기`;
-  hint.hidden = false;
+  hint.textContent = `저장 실패: ${res ? await res.text() : "로컬 서버에 연결할 수 없음"}`;
 }
 document.getElementById("ok")!.addEventListener("click", submit);
 document.getElementById("cancel")!.addEventListener("click", finish);
+document.getElementById("abort")!.addEventListener("click", finish);
 canvas.addEventListener("contextmenu", (e) => {
   e.preventDefault();
   finish();

@@ -6,7 +6,7 @@
     <style>
       html, body { margin: 0; height: 100%; overflow: hidden; background: #000; cursor: crosshair; user-select: none; }
       canvas { display: block; width: 100vw; height: 100vh; }
-      #hint, #size {
+      #top, #size {
         position: fixed;
         font: 12px "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif;
         color: #fff;
@@ -15,7 +15,8 @@
         padding: 3px 7px;
         pointer-events: none;
       }
-      #hint { top: 16px; left: 50%; transform: translateX(-50%); font-size: 13px; padding: 6px 12px; }
+      #top { top: 16px; left: 50%; transform: translateX(-50%); font-size: 13px; padding: 4px 4px 4px 12px; display: flex; align-items: center; gap: 10px; pointer-events: auto; cursor: default; }
+      #abort { font: inherit; border: 0; border-radius: 4px; padding: 5px 10px; cursor: pointer; background: #e5484d; color: #fff; font-weight: 600; }
       #size[hidden], #bar[hidden] { display: none; }
       #bar { position: fixed; display: flex; gap: 6px; padding: 4px; background: #fff; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.35); cursor: default; }
       #bar button { font: 13px "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif; border: 0; border-radius: 6px; padding: 6px 12px; cursor: pointer; background: #eef0f3; color: #222; }
@@ -24,7 +25,7 @@
   </head>
   <body>
     <canvas></canvas>
-    <div id="hint">끌어서 영역 선택 → 완료 · 다시 끌면 새로 선택 · Esc 취소</div>
+    <div id="top"><span id="hint">원하는 모니터에서 끌어서 영역 선택 → 완료</span><button id="abort">✕ 캡처 취소 (Esc)</button></div>
     <div id="size" hidden></div>
     <div id="bar" hidden><button id="cancel">취소</button><button id="ok">완료 (Enter)</button></div>
     <script type="module" src="/src/overlay.ts"></script>

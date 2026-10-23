@@ -1,17 +1,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::ShortcutState;
 
-/// The frozen monitor frame (u32 LE width, height, then RGBA) while the overlay is open. `busy` spans hide → grab → overlay,
-/// so a second hotkey press during that window is ignored.
+/// One frozen frame per overlay window label (u32 LE width, height, then RGBA). `busy` spans
+/// hide → grab → overlays, so a second hotkey press meanwhile is ignored.
 #[derive(Default)]
 struct Snip {
     busy: AtomicBool,
-    frame: Mutex<Option<Vec<u8>>>,
+    frames: Mutex<HashMap<String, Vec<u8>>>,
 }
 
 fn err(e: impl std::fmt::Display) -> String {
@@ -24,68 +25,87 @@ async fn start_snip(app: AppHandle) -> Result<(), String> {
     if snip.busy.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
-    let result = open_overlay(&app).await;
+    let result = open_overlays(&app).await;
     if result.is_err() {
         finish_snip(app.clone(), app.state::<Snip>());
     }
     result
 }
 
-async fn open_overlay(app: &AppHandle) -> Result<(), String> {
-    // ponytail: only the monitor under the cursor; a snip spanning monitors needs one overlay per monitor.
-    let monitor = monitor_under_cursor(app)?;
-    let (pos, size) = (*monitor.position(), *monitor.size());
+/// Freezes every monitor and covers each with its own overlay. A selection stays within one monitor:
+/// macOS won't draw one window across screens of different scale.
+async fn open_overlays(app: &AppHandle) -> Result<(), String> {
+    let monitors = app.available_monitors().map_err(err)?;
+    let focus = monitor_under_cursor(app)?;
+    let mac = cfg!(target_os = "macos");
     // xcap takes physical pixels on Windows and CoreGraphics points on macOS.
-    let unit = if cfg!(target_os = "macos") { monitor.scale_factor() } else { 1.0 };
-    let cx = ((pos.x as f64 + size.width as f64 / 2.0) / unit) as i32;
-    let cy = ((pos.y as f64 + size.height as f64 / 2.0) / unit) as i32;
+    let centers: Vec<(i32, i32)> = monitors
+        .iter()
+        .map(|m| {
+            let (pos, size, k) = (m.position(), m.size(), if mac { m.scale_factor() } else { 1.0 });
+            (((pos.x as f64 + size.width as f64 / 2.0) / k) as i32, ((pos.y as f64 + size.height as f64 / 2.0) / k) as i32)
+        })
+        .collect();
 
     if let Some(main) = app.get_webview_window("main") {
         main.hide().map_err(err)?;
     }
-    let frame = tauri::async_runtime::spawn_blocking(move || {
+    let frames = tauri::async_runtime::spawn_blocking(move || {
         std::thread::sleep(Duration::from_millis(120));
-        let image = xcap::Monitor::from_point(cx, cy).and_then(|m| m.capture_image()).map_err(err)?;
-        #[cfg(debug_assertions)]
-        eprintln!("snip: grabbed {}x{}, monitor {}x{} at {:?}", image.width(), image.height(), size.width, size.height, pos);
-        // Raw RGBA behind a width/height header: the frame never leaves the machine, so encoding is wasted time.
-        let mut raw = Vec::with_capacity(8 + image.as_raw().len());
-        raw.extend_from_slice(&image.width().to_le_bytes());
-        raw.extend_from_slice(&image.height().to_le_bytes());
-        raw.extend_from_slice(image.as_raw());
-        Ok::<_, String>(raw)
+        centers
+            .into_iter()
+            .map(|(cx, cy)| {
+                let image = xcap::Monitor::from_point(cx, cy).and_then(|m| m.capture_image()).map_err(err)?;
+                // Raw RGBA behind a width/height header: the frame never leaves the machine, so encoding is wasted time.
+                let mut raw = Vec::with_capacity(8 + image.as_raw().len());
+                raw.extend_from_slice(&image.width().to_le_bytes());
+                raw.extend_from_slice(&image.height().to_le_bytes());
+                raw.extend_from_slice(image.as_raw());
+                Ok(raw)
+            })
+            .collect::<Result<Vec<_>, String>>()
     })
     .await
     .map_err(err)??;
-    *app.state::<Snip>().frame.lock().unwrap() = Some(frame);
 
-    let overlay = match app.get_webview_window("overlay") {
-        Some(w) => w,
-        None => WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("overlay.html".into()))
+    let mut focused = None;
+    for (i, (monitor, frame)) in monitors.iter().zip(frames).enumerate() {
+        let label = format!("overlay-{i}");
+        app.state::<Snip>().frames.lock().unwrap().insert(label.clone(), frame);
+        let overlay = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("overlay.html".into()))
             .title("화면 캡처")
             .decorations(false)
             .always_on_top(true)
             .skip_taskbar(true)
             .resizable(false)
             .shadow(false)
+            // Otherwise macOS spends the first click on another monitor's overlay just activating it.
+            .accept_first_mouse(true)
             .visible(false)
             .build()
-            .map_err(err)?,
-    };
-    // macOS converts physical coords with the window's *current* screen scale, which breaks on mixed-DPI
-    // setups (the overlay landed on the Retina screen at 2x). Points are global there; Windows uses pixels.
-    if cfg!(target_os = "macos") {
-        let k = monitor.scale_factor();
-        overlay.set_position(LogicalPosition::new(pos.x as f64 / k, pos.y as f64 / k)).map_err(err)?;
-        overlay.set_size(LogicalSize::new(size.width as f64 / k, size.height as f64 / k)).map_err(err)?;
-    } else {
-        overlay.set_position(PhysicalPosition::new(pos.x, pos.y)).map_err(err)?;
-        overlay.set_size(PhysicalSize::new(size.width, size.height)).map_err(err)?;
+            .map_err(err)?;
+        let (pos, size) = (*monitor.position(), *monitor.size());
+        // macOS converts physical coords with the window's *current* screen scale, which breaks on mixed-DPI
+        // setups (the overlay landed on the Retina screen at 2x). Points are global there; Windows uses pixels.
+        if mac {
+            let k = monitor.scale_factor();
+            overlay.set_position(LogicalPosition::new(pos.x as f64 / k, pos.y as f64 / k)).map_err(err)?;
+            overlay.set_size(LogicalSize::new(size.width as f64 / k, size.height as f64 / k)).map_err(err)?;
+        } else {
+            overlay.set_position(PhysicalPosition::new(pos.x, pos.y)).map_err(err)?;
+            overlay.set_size(PhysicalSize::new(size.width, size.height)).map_err(err)?;
+        }
+        overlay.show().map_err(err)?;
+        // Covers the macOS menu bar without a new Space; elsewhere it is plain fullscreen on this monitor.
+        overlay.set_simple_fullscreen(true).map_err(err)?;
+        if monitor.position() == focus.position() {
+            focused = Some(overlay);
+        }
     }
-    overlay.show().map_err(err)?;
-    // Covers the macOS menu bar without a new Space; elsewhere it is plain fullscreen on this monitor.
-    overlay.set_simple_fullscreen(true).map_err(err)?;
-    overlay.set_focus().map_err(err)
+    match focused {
+        Some(w) => w.set_focus().map_err(err),
+        None => Ok(()),
+    }
 }
 
 /// `Monitor::position/size` are in each monitor's own pixels, so on macOS mixed-DPI setups they only
@@ -107,16 +127,18 @@ fn monitor_under_cursor(app: &AppHandle) -> Result<tauri::Monitor, String> {
 }
 
 #[tauri::command]
-fn frozen_image(snip: State<Snip>) -> Result<tauri::ipc::Response, String> {
-    snip.frame.lock().unwrap().clone().map(tauri::ipc::Response::new).ok_or_else(|| "캡처된 화면 없음".into())
+fn frozen_image(window: tauri::WebviewWindow, snip: State<Snip>) -> Result<tauri::ipc::Response, String> {
+    snip.frames.lock().unwrap().get(window.label()).cloned().map(tauri::ipc::Response::new).ok_or_else(|| "캡처된 화면 없음".into())
 }
 
-/// Idempotent: closes the overlay if open, drops the frame, re-shows the widget.
+/// Idempotent: closes every overlay, drops the frames, re-shows the widget.
 #[tauri::command]
 fn finish_snip(app: AppHandle, snip: State<Snip>) {
-    snip.frame.lock().unwrap().take();
-    if let Some(w) = app.get_webview_window("overlay") {
-        let _ = w.destroy();
+    snip.frames.lock().unwrap().clear();
+    for (label, w) in app.webview_windows() {
+        if label.starts_with("overlay-") {
+            let _ = w.destroy();
+        }
     }
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.show();

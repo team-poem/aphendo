@@ -1,5 +1,5 @@
 {
   "identifier": "overlay",
-  "windows": ["overlay"],
+  "windows": ["overlay-*"],
   "permissions": ["core:default"]
 }
