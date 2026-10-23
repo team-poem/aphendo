@@ -50,6 +50,7 @@ pub fn router(dir: PathBuf) -> std::io::Result<Router> {
     Ok(Router::new()
         .route("/api/state", get(get_state))
         .route("/api/captures", post(post_capture))
+        .route("/api/captures/{id}/image", get(capture_image))
         .route("/api/captures/{id}/retry", post(retry_capture))
         .route("/api/todos/{id}", patch(patch_todo).delete(delete_todo))
         .layer(DefaultBodyLimit::max(30 * 1024 * 1024))
@@ -90,6 +91,15 @@ async fn post_capture(State(app): State<App>, headers: HeaderMap, body: Bytes) -
     let capture = app.store.create_capture(id, image).map_err(internal)?;
     tokio::spawn(run(app, capture.clone()));
     Ok((StatusCode::CREATED, Json(capture)).into_response())
+}
+
+/// The file name comes from the store (server-generated), never from the request.
+async fn capture_image(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    let Some(image) = app.store.snapshot().captures.into_iter().find(|c| c.id == id).map(|c| c.image) else {
+        return Err((StatusCode::NOT_FOUND, "없는 캡처".into()));
+    };
+    let bytes = tokio::fs::read(app.dir.join("images").join(&image)).await.map_err(internal)?;
+    Ok(([(header::CONTENT_TYPE, mime_for(&image))], bytes).into_response())
 }
 
 async fn retry_capture(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
@@ -137,6 +147,43 @@ async fn run(app: App, capture: Capture) {
         eprintln!("capture {} failed: {error}", capture.id);
         if let Err(e) = app.store.set_status(&capture.id, CaptureStatus::Failed { error }) {
             eprintln!("capture {}: could not record failure: {e}", capture.id);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::{to_bytes, Body};
+    use axum::http::{header, Request, StatusCode};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn capture_image_serves_stored_bytes_and_404s_unknown() {
+        let dir = std::env::temp_dir().join(format!("ct-api-{}", super::store::new_id()));
+        let app = super::router(dir).unwrap();
+        let png = b"\x89PNG\r\n\x1a\nfake".to_vec();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::post("/api/captures")
+                    .header(header::CONTENT_TYPE, "image/png")
+                    .body(Body::from(png.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let created: serde_json::Value = serde_json::from_slice(&to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+        let id = created["id"].as_str().unwrap();
+
+        let res = app.clone().oneshot(Request::get(format!("/api/captures/{id}/image")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()[header::CONTENT_TYPE], "image/png");
+        assert_eq!(to_bytes(res.into_body(), usize::MAX).await.unwrap(), png, "served bytes match upload");
+
+        for uri in ["/api/captures/nope/image", "/api/captures/..%2Fstore.json/image"] {
+            let res = app.clone().oneshot(Request::get(uri).body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{uri}");
         }
     }
 }
