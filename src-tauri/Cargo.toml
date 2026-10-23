@@ -9,3 +9,5 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2.12", features = [] }
 core = { path = "../core" }
+xcap = "0.9.8"
+tauri-plugin-global-shortcut = "2.4.1"

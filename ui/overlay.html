@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <title>화면 캡처</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #000; cursor: crosshair; user-select: none; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      #hint, #size {
+        position: fixed;
+        font: 12px "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif;
+        color: #fff;
+        background: rgba(0, 0, 0, 0.7);
+        border-radius: 4px;
+        padding: 3px 7px;
+        pointer-events: none;
+      }
+      #hint { top: 16px; left: 50%; transform: translateX(-50%); font-size: 13px; padding: 6px 12px; }
+      #size[hidden] { display: none; }
+    </style>
+  </head>
+  <body>
+    <canvas></canvas>
+    <div id="hint">끌어서 영역 선택 · Esc 또는 우클릭으로 취소</div>
+    <div id="size" hidden></div>
+    <script type="module" src="/src/overlay.ts"></script>
+  </body>
+</html>

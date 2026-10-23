@@ -1,3 +1,5 @@
+import { API } from "./api";
+
 type CaptureStatus =
   | { kind: "queued" }
   | { kind: "running" }
@@ -17,13 +19,13 @@ type State = { captures: Capture[]; todos: Todo[] };
 
 declare global {
   interface Window {
-    __TAURI__?: { window: { getCurrentWindow(): { close(): Promise<void> } } };
+    __TAURI__?: {
+      core: { invoke(cmd: string): Promise<unknown> };
+      window: { getCurrentWindow(): { close(): Promise<void> } };
+    };
   }
 }
 
-// The Tauri webview serves the UI from its own origin; the browser and Vite dev share /api.
-const API =
-  location.protocol === "tauri:" || location.hostname === "tauri.localhost" ? "http://127.0.0.1:47321" : "";
 
 const $ = (id: string) => document.getElementById(id)!;
 const msg = (text: string) => ($("msg").textContent = text);
@@ -252,13 +254,18 @@ document.addEventListener("drop", (e) => {
 });
 
 if (window.__TAURI__) {
+  const tauri = window.__TAURI__;
   const close = $("close");
   close.hidden = false;
-  close.onclick = () => window.__TAURI__!.window.getCurrentWindow().close();
+  close.onclick = () => tauri.window.getCurrentWindow().close();
+  const snip = $("snip");
+  snip.hidden = false;
+  snip.onclick = () => tauri.core.invoke("start_snip").catch((e) => msg(`화면 캡처 실패: ${e}`));
+  $("drop").innerHTML =
+    "<strong>Alt+Shift+S</strong> 또는 📷 로 영역 캡처<br /><small>다른 도구로 캡처했다면 Ctrl+V, 이미지 파일은 끌어다 놓기</small>";
 }
 
 refresh();
 // ponytail: polling every 1.5s; switch to SSE if the list or the poll rate grows.
 setInterval(refresh, 1500);
 
-export {};

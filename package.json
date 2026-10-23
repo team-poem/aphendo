@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite ui",
     "build": "tsc -p ui && vite build ui",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "node ui/src/crop.test.ts"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.9.0",
