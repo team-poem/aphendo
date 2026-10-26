@@ -114,7 +114,7 @@ async fn retry_capture(State(app): State<App>, Path(id): Path<String>) -> ApiRes
             tokio::spawn(run(app, capture.clone()));
             Ok((StatusCode::ACCEPTED, Json(capture)).into_response())
         }
-        None => Err((StatusCode::CONFLICT, "실패한 캡처만 재시도할 수 있음".into())),
+        None => Err((StatusCode::CONFLICT, "분석 중인 캡처는 다시 분석할 수 없음".into())),
     }
 }
 

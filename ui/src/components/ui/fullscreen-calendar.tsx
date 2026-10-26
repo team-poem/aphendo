@@ -47,8 +47,10 @@ export interface FullScreenCalendarProps {
   onEventClick?: (id: string | number) => void;
   /** The visible week or month (not the padding days), whenever it changes. */
   onRangeChange?: (start: Date, end: Date) => void;
-  showAll?: boolean;
-  onToggleAll?: () => void;
+  /** Week grid instead of month grid. */
+  week: boolean;
+  /** View picker shown in the header. */
+  control?: React.ReactNode;
   onAdd?: () => void;
 }
 
@@ -72,8 +74,8 @@ export function FullScreenCalendar({
   onHeaderMouseDown,
   onEventClick,
   onRangeChange,
-  showAll,
-  onToggleAll,
+  week,
+  control,
   onAdd,
 }: FullScreenCalendarProps) {
   const today = startOfToday();
@@ -88,7 +90,6 @@ export function FullScreenCalendar({
   React.useEffect(() => {
     if (!isSameMonth(selectedDay, firstDayCurrentMonth)) setCurrentMonth(format(selectedDay, 'MMM-yyyy'));
   }, [selectedDay.getTime()]);
-  const [week, setWeek] = React.useState(false);
 
   // Week mode follows the selected day; month mode pages independently of it.
   const days = week
@@ -114,16 +115,10 @@ export function FullScreenCalendar({
     setSelectedDay(today);
   }
 
-  function setMode(w: boolean) {
-    setWeek(w);
-    if (!w) setCurrentMonth(format(selectedDay, 'MMM-yyyy'));
-  }
-
-  const segment = (on: boolean) =>
-    cn(
-      'rounded-none shadow-none first:rounded-s-sm last:rounded-e-sm border-[0.5px] border-white/[0.06] text-xs',
-      on ? 'bg-white/10 text-white' : 'bg-surface text-white/50 hover:bg-white/[0.04] hover:text-white'
-    );
+  // Leaving the week grid lands on the month of the day that week was showing.
+  React.useEffect(() => {
+    if (!week) setCurrentMonth(format(selectedDay, 'MMM-yyyy'));
+  }, [week]);
 
   return (
     <div className="flex flex-1 flex-col bg-background">
@@ -154,24 +149,7 @@ export function FullScreenCalendar({
         </div>
 
         <div className="flex flex-col items-center gap-4 md:flex-row md:gap-6">
-          <div className="inline-flex w-full -space-x-px md:w-auto">
-            <Button variant="outline" className={cn(segment(!week), 'w-full md:w-auto')} onClick={() => setMode(false)}>
-              월간
-            </Button>
-            <Button variant="outline" className={cn(segment(week), 'w-full md:w-auto')} onClick={() => setMode(true)}>
-              주간
-            </Button>
-            {onToggleAll && (
-              <Button
-                variant="outline"
-                className={cn(segment(!!showAll), 'ml-2 w-full md:w-auto', showAll && 'bg-orange-500/15 text-orange-400')}
-                title={week ? '이번 주 할일 전체를 목록에' : '이번 달 할일 전체를 목록에'}
-                onClick={onToggleAll}
-              >
-                전체
-              </Button>
-            )}
-          </div>
+          {control}
           <div className="inline-flex w-full -space-x-px rounded-sm shadow-sm md:w-auto rtl:space-x-reverse">
             <Button
               onClick={() => step(-1)}

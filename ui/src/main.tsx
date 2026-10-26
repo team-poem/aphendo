@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useMemo, useState, type MouseEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { format, isSameDay, isWithinInterval, parse, startOfToday } from "date-fns";
+import { endOfDay, format, isToday, isWithinInterval, parse, startOfDay, startOfToday } from "date-fns";
 import { ko } from "date-fns/locale";
 import { Settings as Gear, Minus, X } from "lucide-react";
 import { API } from "./api";
@@ -58,7 +58,8 @@ const byPriority = (a: Todo, b: Todo) => Number(a.done) - Number(b.done) || b.pr
 
 // Done todos live in the 완료 section of the day they were checked off. Older ones have no stamp.
 const doneDay = (t: Todo) => (t.done_at ? new Date(t.done_at) : t.due ? dueDate(t.due) : new Date(t.created_at));
-const byDue = (a: Todo, b: Todo) => (a.due ?? "").localeCompare(b.due ?? "") || byPriority(a, b);
+// Soonest due first; no due date goes last.
+const byDue = (a: Todo, b: Todo) => (a.due ?? "9999").localeCompare(b.due ?? "9999") || byPriority(a, b);
 
 // One calendar cell per due date of an open todo; the todo id doubles as the event id so rows can find their todo.
 function toCalendarData(todos: Todo[]): CalendarData[] {
@@ -155,14 +156,12 @@ function Stars({ t }: { t: Todo }) {
 }
 
 function TodoRow({ t, onSource }: { t: Todo; onSource?: (id: string) => void }) {
-  const fields = [
-    ["지시자", t.sender],
-    ["보고방법", t.method],
-    ["마감", t.due && format(dueDate(t.due), "M/d (EEE)", { locale: ko })],
-    ["담당자", t.contact],
-    ["비고", t.detail],
-    ["완료", t.done_at && format(new Date(t.done_at), "M/d (EEE) HH:mm", { locale: ko })],
-  ].filter((f): f is [string, string] => !!f[1]);
+  // Kept to one line; every field is in the detail dialog.
+  const meta = [
+    t.due && `마감 ${format(dueDate(t.due), "M/d (EEE)", { locale: ko })}`,
+    t.done_at && `완료 ${format(new Date(t.done_at), "M/d HH:mm")}`,
+    t.sender,
+  ].filter(Boolean).join(" · ");
   return (
     <li className="group flex items-start gap-2 rounded-sm px-2 py-1.5 hover:bg-white/[0.03]">
       <input
@@ -173,16 +172,7 @@ function TodoRow({ t, onSource }: { t: Todo; onSource?: (id: string) => void }) 
       />
       <div className="min-w-0 flex-1 cursor-pointer text-sm" title="눌러서 확인·수정" onClick={() => openTodo(t.id)}>
         <div className={cn("break-words", t.done && "text-white/40 line-through")}>{t.title}</div>
-        {fields.length > 0 && (
-          <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-xs">
-            {fields.map(([k, v]) => (
-              <div key={k} className="contents">
-                <dt className="text-white/35">{k}</dt>
-                <dd className="break-words text-white/60">{v}</dd>
-              </div>
-            ))}
-          </dl>
-        )}
+        {meta && <div className="mt-0.5 truncate text-xs text-white/40">{meta}</div>}
       </div>
       <Stars t={t} />
       {onSource && t.capture_id && (
@@ -197,33 +187,6 @@ function TodoRow({ t, onSource }: { t: Todo; onSource?: (id: string) => void }) 
   );
 }
 
-function DoneList({ todos, onSource }: { todos: Todo[]; onSource: (id: string) => void }) {
-  if (!todos.length) return null;
-  return (
-    <details className="border-b border-white/[0.06] p-3">
-      <summary className="cursor-pointer select-none text-xs font-semibold text-white/50">
-        완료 <span className="text-white/30">{todos.length}</span>
-      </summary>
-      <ul className="mt-1">{todos.map((t) => <TodoRow key={t.id} t={t} onSource={onSource} />)}</ul>
-    </details>
-  );
-}
-
-function TodoList({ title, todos, empty, onSource }: { title: string; todos: Todo[]; empty: string; onSource: (id: string) => void }) {
-  return (
-    <section className="border-b border-white/[0.06] p-3">
-      <h2 className="mb-1 text-xs font-semibold text-white/50">
-        {title} <span className="text-white/30">{todos.length || ""}</span>
-      </h2>
-      {todos.length ? (
-        <ul>{todos.map((t) => <TodoRow key={t.id} t={t} onSource={onSource} />)}</ul>
-      ) : (
-        <p className="px-2 py-1 text-xs text-white/30">{empty}</p>
-      )}
-    </section>
-  );
-}
-
 function CaptureView({ c, todos, onClose }: { c: Capture; todos: Todo[]; onClose: () => void }) {
   const [full, setFull] = useState(false);
   return (
@@ -234,6 +197,15 @@ function CaptureView({ c, todos, onClose }: { c: Capture; todos: Todo[]; onClose
         </button>
         <span className="text-white/40">{new Date(c.created_at).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" })}</span>
         <Chip c={c} />
+        {(c.status.kind === "done" || c.status.kind === "failed") && (
+          <button
+            className="ml-auto rounded-sm border border-white/[0.1] px-2 py-1 text-xs text-white/70 hover:bg-white/10 hover:text-white"
+            title="이 캡처에서 할일을 다시 뽑습니다. 지운 할일도 다시 생깁니다."
+            onClick={() => call(`/api/captures/${c.id}/retry`, { method: "POST" })}
+          >
+            다시 분석
+          </button>
+        )}
       </div>
       <img
         src={imageUrl(c.id)}
@@ -242,7 +214,7 @@ function CaptureView({ c, todos, onClose }: { c: Capture; todos: Todo[]; onClose
         className={cn("mx-auto cursor-zoom-in p-3", full ? "max-w-none cursor-zoom-out" : "max-h-[55vh] max-w-full object-contain")}
       />
       <h2 className="px-3 pt-2 text-xs font-semibold text-white/50">
-        {todos.length ? `이 캡처의 할일 ${todos.length}` : "이 캡처에서 나온 할일이 없습니다"}
+        {todos.length ? `이 캡처의 할일 ${todos.length}` : "이 캡처에서 나온 할일이 없습니다. 위의 다시 분석을 눌러 보세요."}
       </h2>
       <ul className="p-1">{todos.map((t) => <TodoRow key={t.id} t={t} />)}</ul>
     </div>
@@ -317,12 +289,20 @@ function App() {
   const [state, setState] = useState<State>({ captures: [], todos: [] });
   const [msg, setMsgState] = useState("");
   const [selected, setSelected] = useState(startOfToday);
-  const [showAll, setShowAll] = useState(false);
-  const [periodTab, setPeriodTab] = useState<"todo" | "done">("todo");
+  // 현재: every open todo. 날짜/주간/월간: what is due (할 일) or was finished (완료) in that span.
+  const [scope, setScope] = useState<"now" | "day" | "week" | "month">("now");
+  const [week, setWeek] = useState(false);
+  const [tab, setTab] = useState<"todo" | "done">("todo");
   const [range, setRange] = useState<{ start: Date; end: Date } | null>(null);
-  showDay = (d) => {
+  const pickDay = (d: Date) => {
     setSelected(d);
-    setShowAll(false);
+    setScope("day");
+  };
+  showDay = pickDay;
+  const pickScope = (v: string) => {
+    if (v === "week" || v === "month") setWeek(v === "week");
+    if (v === "now") setTab("todo");
+    setScope(v as typeof scope);
   };
   const [viewing, setViewing] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -394,15 +374,12 @@ function App() {
   }, []);
 
   const data = useMemo(() => toCalendarData(state.todos), [state.todos]);
-  const inScope = (d: Date) => (showAll && range ? isWithinInterval(d, range) : isSameDay(d, selected));
+  const span = scope === "now" ? null : scope === "day" || !range ? { start: selected, end: selected } : range;
+  const inSpan = (d: Date) => (span ? isWithinInterval(d, { start: startOfDay(span.start), end: endOfDay(span.end) }) : isToday(d));
   const openTodos = state.todos.filter((t) => !t.done);
-  const listed = openTodos.filter((t) => t.due && inScope(dueDate(t.due))).sort(showAll ? byDue : byPriority);
-  const noDue = openTodos.filter((t) => !t.due).sort(byPriority);
-  const doneTodos = state.todos.filter((t) => t.done && inScope(doneDay(t))).sort((a, b) => (b.done_at ?? "").localeCompare(a.done_at ?? ""));
-  const listTitle =
-    showAll && range
-      ? `${format(range.start, "M월 d일", { locale: ko })} – ${format(range.end, "M월 d일", { locale: ko })}`
-      : format(selected, "M월 d일 (EEE)", { locale: ko });
+  const listed = (scope === "now" ? openTodos : openTodos.filter((t) => t.due && inSpan(dueDate(t.due)))).sort(byDue);
+  const doneTodos = state.todos.filter((t) => t.done && inSpan(doneDay(t))).sort((a, b) => (b.done_at ?? "").localeCompare(a.done_at ?? ""));
+  const shown = tab === "todo" ? listed : doneTodos;
   const open = state.todos.filter((t) => !t.done).length;
   const edited = editing ? state.todos.find((t) => t.id === editing) : undefined;
   const view = viewing ? state.captures.find((c) => c.id === viewing) : undefined;
@@ -416,14 +393,26 @@ function App() {
           <FullScreenCalendar
             data={data}
             selectedDay={selected}
-            onSelectDay={setSelected}
+            onSelectDay={pickDay}
             theme={theme}
             onToggleTheme={toggleTheme}
             onHeaderMouseDown={dragWindow}
             onEventClick={(id) => setEditing(String(id))}
             onRangeChange={(start, end) => setRange({ start, end })}
-            showAll={showAll}
-            onToggleAll={() => setShowAll(!showAll)}
+            week={week}
+            control={
+              <select
+                value={scope}
+                onChange={(e) => pickScope(e.target.value)}
+                className="h-9 w-full rounded-sm border-[0.5px] border-white/[0.06] bg-surface px-2 text-xs text-white/80 md:w-auto"
+                title="목록에 보일 할일"
+              >
+                <option value="now">현재 · 미완료 전체</option>
+                {scope === "day" && <option value="day">{format(selected, "M/d (EEE)", { locale: ko })}</option>}
+                <option value="week">주간</option>
+                <option value="month">월간</option>
+              </select>
+            }
             onAdd={() => setAdding(true)}
             onNewEvent={tauri && (() => tauri.core.invoke("start_snip").catch((e) => setMsgState(`화면 캡처 실패: ${e}`)))}
           />
@@ -458,34 +447,22 @@ function App() {
               </div>
             )}
           </section>
-          {showAll ? (
-            <>
-              <div className="flex gap-1 border-b border-white/[0.06] px-3 pt-3">
-                {(["todo", "done"] as const).map((k) => (
-                  <button
-                    key={k}
-                    className={cn("-mb-px border-b-2 px-3 py-1.5 text-xs font-semibold", periodTab === k ? "border-orange-500 text-white" : "border-transparent text-white/40 hover:text-white/70")}
-                    onClick={() => setPeriodTab(k)}
-                  >
-                    {k === "todo" ? `할 일 ${listed.length}` : `완료 ${doneTodos.length}`}
-                  </button>
-                ))}
-              </div>
-              {periodTab === "todo" ? (
-                <>
-                  <TodoList title={`${listTitle} · 마감 기준`} todos={listed} empty="이 기간에 마감인 할일이 없습니다." onSource={setViewing} />
-                  <TodoList title="마감 없음" todos={noDue} empty="마감 없는 할일이 없습니다." onSource={setViewing} />
-                </>
-              ) : (
-                <TodoList title={`${listTitle} · 완료한 날 기준`} todos={doneTodos} empty="이 기간에 완료한 할일이 없습니다." onSource={setViewing} />
-              )}
-            </>
+          <div className="flex gap-1 border-b border-white/[0.06] px-3 pt-2">
+            {(["todo", "done"] as const).map((k) => (
+              <button
+                key={k}
+                className={cn("-mb-px border-b-2 px-3 py-1.5 text-xs font-semibold", tab === k ? "border-orange-500 text-white" : "border-transparent text-white/40 hover:text-white/70")}
+                onClick={() => setTab(k)}
+                title={k === "done" && scope === "now" ? "오늘 완료한 할일" : undefined}
+              >
+                {k === "todo" ? `할 일 ${listed.length}` : `완료 ${doneTodos.length}`}
+              </button>
+            ))}
+          </div>
+          {shown.length ? (
+            <ul className="p-1">{shown.map((t) => <TodoRow key={t.id} t={t} onSource={setViewing} />)}</ul>
           ) : (
-            <>
-              <TodoList title={listTitle} todos={listed} empty="이 날 마감인 할일이 없습니다." onSource={setViewing} />
-              <TodoList title="마감 없음" todos={noDue} empty="마감 없는 할일이 없습니다." onSource={setViewing} />
-              <DoneList todos={doneTodos} onSource={setViewing} />
-            </>
+            <p className="p-4 text-xs text-white/30">{tab === "todo" ? "남은 할일이 없습니다." : "완료한 할일이 없습니다."}</p>
           )}
           {msg && <p className="p-3 text-xs text-red-300 light:text-red-700">{msg}</p>}
         </aside>

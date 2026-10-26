@@ -159,11 +159,12 @@ impl Store {
         })
     }
 
-    /// Failed → Queued. Returns None when the capture is missing or not Failed.
+    /// Failed or Done → Queued, so a capture can be analyzed again (e.g. it found nothing, or its
+    /// todos were deleted). Returns None when the capture is missing or still in progress.
     pub fn retry(&self, capture_id: &str) -> std::io::Result<Option<Capture>> {
         self.mutate(|d| {
             let c = d.captures.iter_mut().find(|c| c.id == capture_id)?;
-            if !matches!(c.status, CaptureStatus::Failed { .. }) {
+            if matches!(c.status, CaptureStatus::Queued | CaptureStatus::Running) {
                 return None;
             }
             c.status = CaptureStatus::Queued;
@@ -171,8 +172,9 @@ impl Store {
         })
     }
 
-    /// Appends the remote result and marks the capture Done. Idempotent on
-    /// (capture_id, normalized title), so a retry never duplicates. Returns how many were new.
+    /// Appends the remote result and marks the capture Done. Skips a title this capture already
+    /// produced, and one another capture already holds with the same due date (the same notice
+    /// captured twice), so deleting a todo never leaves an identical twin behind. Returns how many were new.
     pub fn complete(&self, capture_id: &str, items: Vec<ExtractedTodo>) -> std::io::Result<u32> {
         self.mutate(|d| {
             let mut added = 0;
@@ -180,7 +182,7 @@ impl Store {
                 let title = item.title.split_whitespace().collect::<Vec<_>>().join(" ");
                 let key = normalize(&title);
                 if title.is_empty()
-                    || d.todos.iter().any(|t| t.capture_id == capture_id && normalize(&t.title) == key)
+                    || d.todos.iter().any(|t| normalize(&t.title) == key && (t.capture_id == capture_id || t.due == item.due))
                 {
                     continue;
                 }
@@ -264,7 +266,14 @@ mod tests {
         assert_eq!(d.captures[0].status, CaptureStatus::Done { added: 1 });
 
         let other = s.create_capture(new_id(), "b.png".into()).unwrap();
-        assert_eq!(s.complete(&other.id, vec![item("보고서 제출")]).unwrap(), 1, "same title, other capture");
+        assert_eq!(s.complete(&other.id, vec![item("보고서 제출")]).unwrap(), 0, "same notice captured twice");
+        let later = ExtractedTodo { title: "보고서 제출".into(), due: NaiveDate::from_ymd_opt(2026, 12, 1), ..Default::default() };
+        assert_eq!(s.complete(&other.id, vec![later]).unwrap(), 1, "same title, different due is a new task");
+
+        assert!(s.retry(&c.id).unwrap().is_some(), "a done capture can be analyzed again");
+        let gone = s.snapshot().todos.iter().find(|t| t.capture_id == c.id && t.title == "회의 참석").unwrap().id.clone();
+        s.delete_todo(&gone).unwrap();
+        assert_eq!(s.complete(&c.id, vec![item("회의 참석")]).unwrap(), 1, "re-analysis restores a deleted todo");
     }
 
     #[test]
