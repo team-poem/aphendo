@@ -46,6 +46,17 @@ const applyTheme = (t: Theme) => {
 };
 applyTheme(readTheme());
 
+const TABS = ["todo", "done", "calls"] as const;
+type Tab = (typeof TABS)[number];
+// Per-PC tab order, dragged into place by the user.
+const readTabOrder = (): Tab[] => {
+  try {
+    const o = JSON.parse(localStorage.getItem("tabOrder") ?? "null");
+    if (Array.isArray(o) && o.length === TABS.length && TABS.every((t) => o.includes(t))) return o;
+  } catch {}
+  return [...TABS];
+};
+
 const imageUrl = (id: string) => `${API}/api/captures/${id}/image`;
 
 // Any empty spot of a top bar moves the window; data-tauri-drag-region only catches the tagged element itself.
@@ -349,7 +360,17 @@ function App() {
   // 현재: every open todo. 날짜/주간/월간: what is due (할 일) or was finished (완료) in that span.
   const [scope, setScope] = useState<"now" | "day" | "week" | "month">("now");
   const [week, setWeek] = useState(false);
-  const [tab, setTab] = useState<"todo" | "done" | "calls">("todo");
+  const [tabOrder, setTabOrder] = useState(readTabOrder);
+  const [tab, setTab] = useState<Tab>(() => tabOrder[0]);
+  const [draggedTab, setDraggedTab] = useState<Tab | null>(null);
+  const moveTab = (from: Tab, to: Tab) => {
+    const next = tabOrder.filter((t) => t !== from);
+    next.splice(tabOrder.indexOf(to), 0, from);
+    setTabOrder(next);
+    try {
+      localStorage.setItem("tabOrder", JSON.stringify(next));
+    } catch {}
+  };
   const [range, setRange] = useState<{ start: Date; end: Date } | null>(null);
   const pickDay = (d: Date) => {
     setSelected(d);
@@ -358,7 +379,7 @@ function App() {
   showDay = pickDay;
   const pickScope = (v: string) => {
     if (v === "week" || v === "month") setWeek(v === "week");
-    if (v === "now") setTab("todo");
+
     setScope(v as typeof scope);
   };
   const [viewing, setViewing] = useState<string | null>(null);
@@ -405,7 +426,10 @@ function App() {
       e.preventDefault();
       upload(files);
     };
+    // Only file drags upload; dragging a tab to reorder must not.
+    const files = (e: DragEvent) => !!e.dataTransfer?.types.includes("Files");
     const over = (e: DragEvent) => {
+      if (!files(e)) return;
       e.preventDefault();
       setDragging(true);
     };
@@ -413,6 +437,7 @@ function App() {
       if (!e.relatedTarget) setDragging(false);
     };
     const drop = (e: DragEvent) => {
+      if (!files(e)) return;
       e.preventDefault();
       setDragging(false);
       upload([...(e.dataTransfer?.files ?? [])]);
@@ -505,12 +530,27 @@ function App() {
             )}
           </section>
           <div className="flex gap-1 border-b border-white/[0.06] px-3 pt-2">
-            {(["todo", "done", "calls"] as const).map((k) => (
+            {tabOrder.map((k) => (
               <button
                 key={k}
-                className={cn("-mb-px border-b-2 px-3 py-1.5 text-xs font-semibold", tab === k ? "border-orange-500 text-white" : "border-transparent text-white/40 hover:text-white/70")}
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.effectAllowed = "move";
+                  setDraggedTab(k);
+                }}
+                onDragOver={(e) => draggedTab && draggedTab !== k && e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (draggedTab && draggedTab !== k) moveTab(draggedTab, k);
+                }}
+                onDragEnd={() => setDraggedTab(null)}
+                className={cn(
+                  "-mb-px cursor-grab border-b-2 px-3 py-1.5 text-xs font-semibold active:cursor-grabbing",
+                  tab === k ? "border-orange-500 text-white" : "border-transparent text-white/40 hover:text-white/70",
+                  draggedTab === k && "opacity-40",
+                )}
                 onClick={() => setTab(k)}
-                title={k === "done" && scope === "now" ? "오늘 완료한 할일" : undefined}
+                title={k === "done" && scope === "now" ? "오늘 완료한 할일 · 끌어서 순서 변경" : "끌어서 순서 변경"}
               >
                 {k === "todo" ? `할 일 ${listed.length}` : k === "done" ? `완료 ${doneTodos.length}` : `통화 메모 ${state.calls?.length ?? 0}`}
               </button>
