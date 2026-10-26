@@ -1,6 +1,6 @@
 use crate::remote::ExtractedTodo;
 use chrono::{DateTime, NaiveDate, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -27,9 +27,69 @@ pub struct Todo {
     pub capture_id: String,
     pub title: String,
     pub due: Option<NaiveDate>,
+    #[serde(default)]
+    pub sender: Option<String>,
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub contact: Option<String>,
     pub detail: Option<String>,
     pub done: bool,
+    /// When the user last checked it off; None while open.
+    #[serde(default)]
+    pub done_at: Option<DateTime<Utc>>,
+    /// 0 = unset, 1..=3 stars.
+    #[serde(default)]
+    pub priority: u8,
     pub created_at: DateTime<Utc>,
+}
+
+impl Todo {
+    /// `capture_id` is empty for a todo the user typed in.
+    fn new(capture_id: &str, title: String, item: ExtractedTodo) -> Self {
+        Todo {
+            id: new_id(),
+            capture_id: capture_id.into(),
+            title,
+            due: item.due,
+            sender: clean(item.sender),
+            method: clean(item.method),
+            contact: clean(item.contact),
+            detail: clean(item.detail),
+            done: false,
+            done_at: None,
+            priority: 0,
+            created_at: Utc::now(),
+        }
+    }
+}
+
+/// Fields the user edits on a todo. Absent fields stay as they are; for the
+/// nullable ones `null` (or a blank string) clears.
+#[derive(Debug, Default, Deserialize)]
+pub struct TodoPatch {
+    pub done: Option<bool>,
+    pub priority: Option<u8>,
+    pub title: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    pub due: Option<Option<NaiveDate>>,
+    #[serde(default, deserialize_with = "present")]
+    pub sender: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    pub method: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    pub contact: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    pub detail: Option<Option<String>>,
+}
+
+/// Tells a present `null` apart from an absent key.
+fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(d).map(Some)
+}
+
+fn clean(s: Option<String>) -> Option<String> {
+    s.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -124,15 +184,7 @@ impl Store {
                 {
                     continue;
                 }
-                d.todos.push(Todo {
-                    id: new_id(),
-                    capture_id: capture_id.into(),
-                    title,
-                    due: item.due,
-                    detail: item.detail.filter(|s| !s.trim().is_empty()),
-                    done: false,
-                    created_at: Utc::now(),
-                });
+                d.todos.push(Todo::new(capture_id, title, item));
                 added += 1;
             }
             if let Some(c) = d.captures.iter_mut().find(|c| c.id == capture_id) {
@@ -142,11 +194,34 @@ impl Store {
         })
     }
 
+    /// A todo with no capture behind it. None when the title is blank.
+    pub fn add_todo(&self, item: ExtractedTodo, priority: u8) -> std::io::Result<Option<Todo>> {
+        let Some(title) = clean(Some(item.title.clone())) else { return Ok(None) };
+        let todo = Todo { priority, ..Todo::new("", title, item) };
+        self.mutate(|d| d.todos.push(todo.clone()))?;
+        Ok(Some(todo))
+    }
+
     /// Returns false when no todo has this id.
-    pub fn set_done(&self, id: &str, done: bool) -> std::io::Result<bool> {
+    pub fn update_todo(&self, id: &str, p: TodoPatch) -> std::io::Result<bool> {
         self.mutate(|d| match d.todos.iter_mut().find(|t| t.id == id) {
             Some(t) => {
-                t.done = done;
+                if let Some(done) = p.done.filter(|&d| d != t.done) {
+                    t.done = done;
+                    t.done_at = done.then(Utc::now);
+                }
+                t.priority = p.priority.unwrap_or(t.priority);
+                if let Some(title) = clean(p.title) {
+                    t.title = title;
+                }
+                if let Some(due) = p.due {
+                    t.due = due;
+                }
+                for (field, v) in [(&mut t.sender, p.sender), (&mut t.method, p.method), (&mut t.contact, p.contact), (&mut t.detail, p.detail)] {
+                    if let Some(v) = v {
+                        *field = clean(v);
+                    }
+                }
                 true
             }
             None => false,
@@ -173,7 +248,7 @@ mod tests {
     }
 
     fn item(title: &str) -> ExtractedTodo {
-        ExtractedTodo { title: title.into(), due: None, detail: None }
+        ExtractedTodo { title: title.into(), ..Default::default() }
     }
 
     #[test]
@@ -190,6 +265,16 @@ mod tests {
 
         let other = s.create_capture(new_id(), "b.png".into()).unwrap();
         assert_eq!(s.complete(&other.id, vec![item("보고서 제출")]).unwrap(), 1, "same title, other capture");
+    }
+
+    #[test]
+    fn manual_todo_needs_a_title_and_survives_completion() {
+        let s = Store::open(&tmp()).unwrap();
+        assert!(s.add_todo(item("  "), 0).unwrap().is_none());
+        let t = s.add_todo(ExtractedTodo { title: " 주간 보고 ".into(), sender: Some("팀장".into()), ..Default::default() }, 2).unwrap().unwrap();
+        assert_eq!((t.title.as_str(), t.capture_id.as_str(), t.priority), ("주간 보고", "", 2));
+        s.update_todo(&t.id, TodoPatch { done: Some(true), ..Default::default() }).unwrap();
+        assert!(s.snapshot().todos.iter().any(|x| x.id == t.id && x.done), "completing keeps the record");
     }
 
     #[test]
@@ -210,10 +295,12 @@ mod tests {
             let b = s.create_capture(new_id(), "b.png".into()).unwrap();
             let done = s.create_capture(new_id(), "c.png".into()).unwrap();
             let due = NaiveDate::from_ymd_opt(2026, 11, 5);
-            s.complete(&done.id, vec![ExtractedTodo { title: "회의".into(), due, detail: Some("3층".into()) }])
-                .unwrap();
+            let item = ExtractedTodo { title: "회의".into(), due, sender: Some(" 총무팀 ".into()), method: Some("".into()), detail: Some("3층".into()), ..Default::default() };
+            s.complete(&done.id, vec![item]).unwrap();
             let tid = s.snapshot().todos[0].id.clone();
-            s.set_done(&tid, true).unwrap();
+            s.update_todo(&tid, TodoPatch { done: Some(true), ..Default::default() }).unwrap();
+            let edit: TodoPatch = serde_json::from_str(r#"{"priority":2,"title":"회의 참석","due":null,"contact":"내선 1","detail":" "}"#).unwrap();
+            s.update_todo(&tid, edit).unwrap();
             (a.id, b.id, tid)
         };
         let s = Store::open(&dir).unwrap();
@@ -223,9 +310,20 @@ mod tests {
             assert_eq!(c.status, CaptureStatus::Failed { error: "앱 재시작으로 중단".into() });
         }
         let t = d.todos.iter().find(|t| t.id == tid).unwrap();
-        assert!(t.done);
-        assert_eq!(t.due, NaiveDate::from_ymd_opt(2026, 11, 5));
-        assert_eq!(t.detail.as_deref(), Some("3층"));
+        assert!(t.done, "priority-only patch keeps done");
+        let at = t.done_at.expect("checking off stamps done_at");
+        s.update_todo(&tid, TodoPatch { done: Some(true), ..Default::default() }).unwrap();
+        assert_eq!(s.snapshot().todos.iter().find(|t| t.id == tid).unwrap().done_at, Some(at), "re-sending done keeps the first stamp");
+        s.update_todo(&tid, TodoPatch { done: Some(false), ..Default::default() }).unwrap();
+        assert_eq!(s.snapshot().todos.iter().find(|t| t.id == tid).unwrap().done_at, None, "reopening clears it");
+        assert_eq!(t.priority, 2);
+        assert_eq!(t.sender.as_deref(), Some("총무팀"));
+        assert_eq!(t.method, None, "blank method dropped");
+        assert_eq!(t.title, "회의 참석");
+        assert_eq!(t.due, None, "null clears due");
+        assert_eq!(t.sender.as_deref(), Some("총무팀"), "absent key keeps sender");
+        assert_eq!(t.contact.as_deref(), Some("내선 1"));
+        assert_eq!(t.detail, None, "blank clears detail");
         assert!(s.retry(&running).unwrap().is_some(), "interrupted capture is retryable");
     }
 }

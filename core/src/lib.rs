@@ -55,6 +55,7 @@ pub fn router(dir: PathBuf) -> std::io::Result<Router> {
         .route("/api/captures", post(post_capture))
         .route("/api/captures/{id}/image", get(capture_image))
         .route("/api/captures/{id}/retry", post(retry_capture))
+        .route("/api/todos", post(add_todo))
         .route("/api/todos/{id}", patch(patch_todo).delete(delete_todo))
         .layer(DefaultBodyLimit::max(30 * 1024 * 1024))
         .layer(cors)
@@ -120,52 +121,65 @@ async fn retry_capture(State(app): State<App>, Path(id): Path<String>) -> ApiRes
 /// What the settings dialog may see: never the token itself.
 #[derive(serde::Serialize)]
 struct ConfigView {
-    mcp_url: Option<String>,
     has_token: bool,
 }
 
 async fn get_config(State(app): State<App>) -> ApiResult {
     let cfg = remote::Config::load(&app.dir).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    Ok(Json(ConfigView { mcp_url: cfg.mcp_url, has_token: cfg.mcp_token.is_some() }).into_response())
+    Ok(Json(ConfigView { has_token: cfg.mcp_token.is_some() }).into_response())
 }
 
 #[derive(Deserialize)]
 struct ConfigPut {
-    mcp_url: String,
     mcp_token: Option<String>,
 }
 
 async fn put_config(State(app): State<App>, Json(p): Json<ConfigPut>) -> ApiResult {
-    remote::Config::save(&app.dir, &p.mcp_url, p.mcp_token).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    remote::Config::save(&app.dir, p.mcp_token).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     get_config(State(app)).await
 }
 
 /// Unsaved form values override the stored config, so the dialog can check before saving.
 #[derive(Deserialize, Default)]
 struct ConfigTest {
-    mcp_url: Option<String>,
     mcp_token: Option<String>,
 }
 
 async fn test_config(State(app): State<App>, body: Option<Json<ConfigTest>>) -> ApiResult {
     let t = body.map(|Json(t)| t).unwrap_or_default();
     let mut cfg = remote::Config::load(&app.dir).unwrap_or_default();
-    if let Some(url) = t.mcp_url.filter(|u| !u.trim().is_empty()) {
-        cfg.mcp_url = Some(remote::validate_url(&url).map_err(|e| (StatusCode::BAD_REQUEST, e))?);
-    }
     if let Some(token) = t.mcp_token.filter(|t| !t.trim().is_empty()) {
         cfg.mcp_token = Some(token.trim().to_string());
     }
     Ok(Json(remote::probe(&cfg).await).into_response())
 }
 
-#[derive(serde::Deserialize)]
-struct DonePatch {
-    done: bool,
+#[derive(Deserialize)]
+struct NewTodo {
+    #[serde(flatten)]
+    todo: remote::ExtractedTodo,
+    #[serde(default)]
+    priority: u8,
 }
 
-async fn patch_todo(State(app): State<App>, Path(id): Path<String>, Json(p): Json<DonePatch>) -> ApiResult {
-    match app.store.set_done(&id, p.done).map_err(internal)? {
+async fn add_todo(State(app): State<App>, Json(p): Json<NewTodo>) -> ApiResult {
+    if p.priority > 3 {
+        return Err((StatusCode::BAD_REQUEST, "중요도는 0~3".into()));
+    }
+    match app.store.add_todo(p.todo, p.priority).map_err(internal)? {
+        Some(t) => Ok((StatusCode::CREATED, Json(t)).into_response()),
+        None => Err((StatusCode::BAD_REQUEST, "업무내용은 비울 수 없습니다".into())),
+    }
+}
+
+async fn patch_todo(State(app): State<App>, Path(id): Path<String>, Json(p): Json<store::TodoPatch>) -> ApiResult {
+    if p.priority.is_some_and(|n| n > 3) {
+        return Err((StatusCode::BAD_REQUEST, "중요도는 0~3".into()));
+    }
+    if p.title.as_deref().is_some_and(|t| t.trim().is_empty()) {
+        return Err((StatusCode::BAD_REQUEST, "업무내용은 비울 수 없습니다".into()));
+    }
+    match app.store.update_todo(&id, p).map_err(internal)? {
         true => Ok(StatusCode::NO_CONTENT.into_response()),
         false => Err((StatusCode::NOT_FOUND, "없는 할일".into())),
     }
@@ -220,21 +234,19 @@ mod tests {
         let app = super::router(dir.clone()).unwrap();
         let get = || Request::get("/api/config").body(Body::empty()).unwrap();
 
-        let (s, body) = send(&app, put(r#"{"mcp_url":"https://mcp.example/mcp","mcp_token":"s3cret-tok"}"#)).await;
+        // An older config.json may still carry the server address; it is ignored.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), r#"{"mcp_url":"https://old.example/mcp"}"#).unwrap();
+
+        let (s, body) = send(&app, put(r#"{"mcp_token":"s3cret-tok"}"#)).await;
         assert_eq!(s, StatusCode::OK, "{body}");
         let (_, body) = send(&app, get()).await;
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap(), serde_json::json!({"mcp_url":"https://mcp.example/mcp","has_token":true}));
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap(), serde_json::json!({"has_token":true}));
         assert!(!body.contains("s3cret-tok"), "GET must not leak the token");
 
-        send(&app, put(r#"{"mcp_url":"http://127.0.0.1:8787/mcp"}"#)).await;
-        let saved = super::remote::Config::load(&dir).unwrap();
-        assert_eq!(saved.mcp_url.as_deref(), Some("http://127.0.0.1:8787/mcp"));
-        assert_eq!(saved.mcp_token.as_deref(), Some("s3cret-tok"), "omitted token is kept");
-
-        for bad in [r#"{"mcp_url":"ftp://x/mcp"}"#, r#"{"mcp_url":"not a url"}"#] {
-            assert_eq!(send(&app, put(bad)).await.0, StatusCode::BAD_REQUEST, "{bad}");
-        }
-        assert_eq!(super::remote::Config::load(&dir).unwrap().mcp_url.as_deref(), Some("http://127.0.0.1:8787/mcp"), "rejected PUT leaves config alone");
+        send(&app, put(r#"{"mcp_token":"  "}"#)).await;
+        assert_eq!(super::remote::Config::load(&dir).unwrap().mcp_token.as_deref(), Some("s3cret-tok"), "blank token keeps the stored one");
+        assert!(!std::fs::read_to_string(dir.join("config.json")).unwrap().contains("mcp_url"), "save drops the old address");
     }
 
     #[tokio::test]

@@ -3,6 +3,7 @@
 /* shadcn tokens the Button/Separator defaults reference; the calendar overrides most of them. */
 @theme {
   --color-background: #050505;
+  --color-surface: #0a0a0a;
   --color-foreground: #fafafa;
   --color-primary: #fafafa;
   --color-primary-foreground: #0a0a0a;
@@ -18,4 +19,23 @@
 }
 
 html, body, #root { height: 100%; }
-body { margin: 0; background: #050505; color: #fafafa; color-scheme: dark; }
+body { margin: 0; background: var(--color-background); color: var(--color-foreground); color-scheme: dark; }
+
+@custom-variant light (&:where(.light, .light *));
+
+/* Light theme: the UI is written with white/N alpha utilities, so flipping --color-white to black flips them all. */
+html.light {
+  --color-white: #000;
+  --color-background: #fafafa;
+  --color-surface: #fff;
+  --color-foreground: #0a0a0a;
+  --color-primary: #0a0a0a;
+  --color-primary-foreground: #fafafa;
+  --color-secondary: #f0f0f0;
+  --color-secondary-foreground: #0a0a0a;
+  --color-accent: #f0f0f0;
+  --color-accent-foreground: #0a0a0a;
+  --color-border: rgb(0 0 0 / 0.08);
+  --color-input: rgb(0 0 0 / 0.12);
+}
+html.light body { color-scheme: light; }

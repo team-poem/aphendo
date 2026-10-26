@@ -11,3 +11,5 @@ tauri = { version = "2.12", features = [] }
 core = { path = "../core" }
 xcap = "0.9.8"
 tauri-plugin-global-shortcut = "2.4.1"
+tauri-plugin-updater = "2"
+serde_json = "1.0.154"

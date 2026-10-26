@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::ShortcutState;
+use tauri_plugin_updater::UpdaterExt;
 
 /// One frozen frame per overlay window label (u32 LE width, height, then RGBA). `busy` spans
 /// hide → grab → overlays, so a second hotkey press meanwhile is ignored.
@@ -141,9 +142,27 @@ fn finish_snip(app: AppHandle, snip: State<Snip>) {
         }
     }
     if let Some(main) = app.get_webview_window("main") {
+        let _ = main.unminimize();
         let _ = main.show();
     }
     snip.busy.store(false, Ordering::SeqCst);
+}
+
+/// The newer version on the release feed, if any.
+#[tauri::command]
+async fn check_update(app: AppHandle) -> Result<Option<String>, String> {
+    let update = app.updater().map_err(err)?.check().await.map_err(err)?;
+    Ok(update.map(|u| u.version))
+}
+
+/// Downloads, verifies the signature, installs, restarts. On Windows the installer closes the app itself.
+#[tauri::command]
+async fn install_update(app: AppHandle) -> Result<(), String> {
+    let Some(update) = app.updater().map_err(err)?.check().await.map_err(err)? else {
+        return Err("이미 최신 버전입니다".into());
+    };
+    update.download_and_install(|_, _| {}, || {}).await.map_err(err)?;
+    app.restart();
 }
 
 fn main() {
@@ -165,7 +184,8 @@ fn main() {
                 })
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![start_snip, frozen_image, finish_snip])
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![start_snip, frozen_image, finish_snip, check_update, install_update])
         .setup(|_| {
             // ponytail: a second instance fails to bind and its window talks to the first one's server.
             tauri::async_runtime::spawn(async {

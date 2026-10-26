@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "CaptureTodo",
-  "version": "0.1.0",
+  "productName": "Aphendo",
+  "version": "0.2.0",
   "identifier": "com.capturetodo.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "할일 캡처",
+        "title": "Aphendo",
         "width": 1100,
         "height": 760,
         "minWidth": 400,
@@ -22,15 +22,35 @@
         "resizable": true,
         "alwaysOnTop": true,
         "decorations": false,
-        "skipTaskbar": true,
+        "skipTaskbar": false,
         "dragDropEnabled": false
       }
     ],
-    "security": { "csp": null }
+    "security": {
+      "csp": null
+    }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEwODQ1OTAwMEMyRjZCNDYKUldSR2F5OE1BRm1FRUtMejhJOGllSjlGVkdKSDBzdmNIWFZBbjZSSlNzOU9MNXM0b3grWTM1OFMK",
+      "endpoints": [
+        "https://github.com/team-poem/aphendo/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

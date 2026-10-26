@@ -9,20 +9,39 @@ use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(240);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
-/// Baked in at build time so a fresh install only needs its token.
-const DEFAULT_MCP_URL: Option<&str> = option_env!("CAPTURE_TODO_DEFAULT_MCP_URL");
+/// Fixed server; users only ever enter a token. `MCP_URL` overrides it for local development.
+const MCP_URL: &str = "https://capture-mcp.146.56.113.33.sslip.io/mcp";
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+fn mcp_url() -> String {
+    nonempty(std::env::var("MCP_URL").ok()).unwrap_or_else(|| MCP_URL.into())
+}
+
+/// Connection errors quote the URL; the address is not meant to reach the screen.
+fn redact(e: impl std::fmt::Display) -> String {
+    let url = mcp_url();
+    let host = reqwest::Url::parse(&url).ok().and_then(|u| u.host_str().map(String::from)).unwrap_or_default();
+    let s = e.to_string().replace(&url, "서버");
+    if host.is_empty() { s } else { s.replace(&host, "서버") }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct ExtractedTodo {
     pub title: String,
     pub due: Option<NaiveDate>,
+    /// 발신자(업무지시자). Missing from servers older than this field.
+    #[serde(default)]
+    pub sender: Option<String>,
+    /// 제출방법(보고방법).
+    #[serde(default)]
+    pub method: Option<String>,
+    /// 담당자(문의처).
+    #[serde(default)]
+    pub contact: Option<String>,
     pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mcp_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_token: Option<String>,
 }
@@ -38,34 +57,20 @@ fn read_file(data_dir: &Path) -> Result<Config, String> {
     }
 }
 
-/// http(s) with a host; anything else would only fail later at capture time.
-pub fn validate_url(url: &str) -> Result<String, String> {
-    let url = url.trim();
-    let parsed = reqwest::Url::parse(url).map_err(|e| format!("MCP 주소 형식 오류: {e}"))?;
-    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-        return Err("MCP 주소는 http:// 또는 https:// 로 시작해야 합니다".into());
-    }
-    Ok(url.to_string())
-}
-
 impl Config {
-    /// `config.json` in the data dir, then `MCP_URL`/`MCP_TOKEN` env, then the built-in URL.
-    /// Read per job so editing config.json takes effect without a restart.
+    /// Token from `config.json` in the data dir, then `MCP_TOKEN` env.
+    /// Read per job so a saved token takes effect without a restart.
     pub fn load(data_dir: &Path) -> Result<Self, String> {
         let file = read_file(data_dir)?;
         Ok(Config {
-            mcp_url: nonempty(file.mcp_url)
-                .or_else(|| nonempty(std::env::var("MCP_URL").ok()))
-                .or_else(|| DEFAULT_MCP_URL.map(String::from)),
             mcp_token: nonempty(file.mcp_token).or_else(|| nonempty(std::env::var("MCP_TOKEN").ok())),
         })
     }
 
     /// Writes `config.json` atomically. A missing or blank token keeps the stored one.
     /// An unreadable config.json is replaced: the settings dialog is how the user repairs it.
-    pub fn save(data_dir: &Path, mcp_url: &str, mcp_token: Option<String>) -> Result<(), String> {
+    pub fn save(data_dir: &Path, mcp_token: Option<String>) -> Result<(), String> {
         let mut file = read_file(data_dir).unwrap_or_default();
-        file.mcp_url = Some(validate_url(mcp_url)?);
         if let Some(token) = nonempty(mcp_token) {
             file.mcp_token = Some(token);
         }
@@ -76,8 +81,7 @@ impl Config {
     }
 
     fn transport(&self) -> Result<StreamableHttpClientTransport<reqwest::Client>, String> {
-        let url = self.mcp_url.clone().ok_or("MCP 주소 미설정 (⚙ 설정)")?;
-        let mut cfg = StreamableHttpClientTransportConfig::with_uri(url);
+        let mut cfg = StreamableHttpClientTransportConfig::with_uri(mcp_url());
         if let Some(token) = &self.mcp_token {
             cfg = cfg.auth_header(token.clone());
         }
@@ -99,14 +103,14 @@ pub async fn probe(cfg: &Config) -> Probe {
         let transport = cfg.transport().map_err(|error| Probe::Unreachable { error })?;
         let client = ().serve(transport).await.map_err(|e| {
             // ponytail: rmcp reports a challenge-less 401 only as text ("unexpected server response: HTTP 401 …").
-            let full = e.to_string();
+            let full = redact(e);
             let error = full.split_once("] error: ").map_or(full.as_str(), |(_, rest)| rest).trim().to_string();
             match ["HTTP 401", "HTTP 403", "Auth required", "Insufficient scope"].iter().any(|m| error.contains(m)) {
                 true => Probe::Unauthorized,
                 false => Probe::Unreachable { error },
             }
         })?;
-        let tools = client.list_all_tools().await.map_err(|e| Probe::Unreachable { error: e.to_string() });
+        let tools = client.list_all_tools().await.map_err(|e| Probe::Unreachable { error: redact(e) });
         let _ = client.cancel().await;
         Ok::<_, Probe>(Probe::Ok { tools: tools?.into_iter().map(|t| t.name.to_string()).collect() })
     };
@@ -160,10 +164,10 @@ pub async fn extract_todos(
         let client = ()
             .serve(transport)
             .await
-            .map_err(|e| format!("MCP 연결 실패: {e}"))?;
+            .map_err(|e| format!("MCP 연결 실패: {}", redact(e)))?;
         let params = CallToolRequestParams::new("extract_todos")
             .with_arguments(args.as_object().cloned().unwrap_or_default());
-        let result = client.call_tool(params).await.map_err(|e| format!("MCP 호출 실패: {e}"));
+        let result = client.call_tool(params).await.map_err(|e| format!("MCP 호출 실패: {}", redact(e)));
         let _ = client.cancel().await;
         result
     };
@@ -178,6 +182,13 @@ mod tests {
     use super::*;
     use rmcp::model::ContentBlock;
     use serde_json::json;
+
+    #[test]
+    fn errors_never_show_the_server_address() {
+        let e = format!("error sending request for url ({MCP_URL}): dns error for {}", "capture-mcp.146.56.113.33.sslip.io");
+        let shown = redact(e);
+        assert!(!shown.contains("146.56"), "{shown}");
+    }
 
     #[test]
     fn parses_structured_content() {

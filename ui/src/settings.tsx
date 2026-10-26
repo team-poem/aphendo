@@ -3,11 +3,63 @@ import { X } from "lucide-react";
 import { API } from "./api";
 import { cn } from "@/lib/utils";
 
-export type ConfigView = { mcp_url: string | null; has_token: boolean };
+export type ConfigView = { has_token: boolean };
 type Probe = { status: "ok"; tools: string[] } | { status: "unauthorized" } | { status: "unreachable"; error: string };
 type Result = { tone: "ok" | "bad"; text: string } | null;
 
-export const configured = (c: ConfigView | null) => !!c?.mcp_url && c.has_token;
+export const configured = (c: ConfigView | null) => !!c?.has_token;
+
+type Tauri = { core: { invoke<T>(cmd: string): Promise<T> }; app: { getVersion(): Promise<string> } };
+const tauri = (window as unknown as { __TAURI__?: Tauri }).__TAURI__;
+
+/** Desktop only: current version, a manual check, and install of a newer release. */
+function Update() {
+  const [version, setVersion] = useState("");
+  const [state, setState] = useState<{ kind: "idle" | "checking" | "latest" | "installing" } | { kind: "available"; next: string } | { kind: "error"; text: string }>({ kind: "idle" });
+  useEffect(() => {
+    tauri?.app.getVersion().then(setVersion);
+  }, []);
+  if (!tauri) return null;
+
+  const check = async () => {
+    setState({ kind: "checking" });
+    try {
+      const next = await tauri.core.invoke<string | null>("check_update");
+      setState(next ? { kind: "available", next } : { kind: "latest" });
+    } catch (e) {
+      setState({ kind: "error", text: `확인 실패: ${e}` });
+    }
+  };
+  const install = async () => {
+    setState({ kind: "installing" });
+    try {
+      await tauri.core.invoke("install_update");
+    } catch (e) {
+      setState({ kind: "error", text: `업데이트 실패: ${e}` });
+    }
+  };
+
+  const btn = "rounded-sm px-3 py-1.5 text-sm disabled:opacity-40";
+  return (
+    <div className="mb-3 flex items-center gap-2 border-b border-white/[0.06] pb-3 text-xs text-white/50">
+      <span className="flex-1">
+        버전 {version && `v${version}`}
+        {state.kind === "latest" && <span className="ml-2 text-emerald-300 light:text-emerald-700">최신 버전입니다</span>}
+        {state.kind === "available" && <span className="ml-2 text-orange-400">v{state.next} 사용 가능</span>}
+        {state.kind === "error" && <span className="ml-2 break-words text-red-300 light:text-red-700">{state.text}</span>}
+      </span>
+      {state.kind === "available" || state.kind === "installing" ? (
+        <button type="button" className={cn(btn, "bg-orange-500 font-medium text-[#fff] hover:bg-orange-600")} disabled={state.kind === "installing"} onClick={install}>
+          {state.kind === "installing" ? "설치 중…" : "업데이트"}
+        </button>
+      ) : (
+        <button type="button" className={cn(btn, "border border-white/[0.1] text-white/70 hover:bg-white/10 hover:text-white")} disabled={state.kind === "checking"} onClick={check}>
+          {state.kind === "checking" ? "확인 중…" : "업데이트 확인"}
+        </button>
+      )}
+    </div>
+  );
+}
 
 export async function fetchConfig(): Promise<ConfigView | null> {
   const r = await fetch(`${API}/api/config`).catch(() => null);
@@ -30,7 +82,6 @@ function describe(p: Probe): Result {
 }
 
 export function Settings({ config, onClose, onSaved }: { config: ConfigView | null; onClose: () => void; onSaved: (c: ConfigView) => void }) {
-  const [url, setUrl] = useState(config?.mcp_url ?? "");
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<Result>(null);
@@ -41,7 +92,7 @@ export function Settings({ config, onClose, onSaved }: { config: ConfigView | nu
     return () => document.removeEventListener("keydown", esc);
   }, [onClose]);
 
-  const body = () => ({ mcp_url: url.trim(), ...(token.trim() && { mcp_token: token.trim() }) });
+  const body = () => (token.trim() ? { mcp_token: token.trim() } : {});
 
   async function run(path: string, init: RequestInit, done: (r: Response) => Promise<Result>) {
     setBusy(true);
@@ -80,17 +131,14 @@ export function Settings({ config, onClose, onSaved }: { config: ConfigView | nu
             <X size={16} />
           </button>
         </div>
-        <label className="mb-3 block text-xs text-white/50">
-          MCP 서버 주소
-          <input className={cn(field, "mt-1")} type="url" required placeholder="https://…/mcp" value={url} onChange={(e) => setUrl(e.target.value)} />
-        </label>
+        <Update />
         <label className="mb-3 block text-xs text-white/50">
           토큰
           <input
             className={cn(field, "mt-1")}
             type="password"
             autoComplete="off"
-            placeholder={config?.has_token ? "저장됨 · 바꿀 때만 입력" : "관리자에게 받은 토큰"}
+            placeholder={config?.has_token ? "저장됨 · 바꿀 때만 입력" : "관리자에게 받은 접속 토큰"}
             value={token}
             onChange={(e) => setToken(e.target.value)}
           />
@@ -101,7 +149,7 @@ export function Settings({ config, onClose, onSaved }: { config: ConfigView | nu
           </p>
         )}
         <div className="flex justify-end gap-2">
-          <button type="button" className={cn(btn, "border border-white/[0.1] text-white/70 hover:bg-white/10 hover:text-white")} disabled={busy || !url.trim()} onClick={test}>
+          <button type="button" className={cn(btn, "border border-white/[0.1] text-white/70 hover:bg-white/10 hover:text-white")} disabled={busy || (!token.trim() && !config?.has_token)} onClick={test}>
             {busy ? "확인 중…" : "연결 확인"}
           </button>
           <button type="submit" className={cn(btn, "bg-orange-500 font-medium text-[#fff] hover:bg-orange-600")} disabled={busy}>
