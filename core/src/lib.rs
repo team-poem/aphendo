@@ -56,6 +56,8 @@ pub fn router(dir: PathBuf) -> std::io::Result<Router> {
         .route("/api/captures/{id}/image", get(capture_image))
         .route("/api/captures/{id}/retry", post(retry_capture))
         .route("/api/todos", post(add_todo))
+        .route("/api/calls", post(add_call))
+        .route("/api/calls/{id}", axum::routing::delete(delete_call))
         .route("/api/todos/{id}", patch(patch_todo).delete(delete_todo))
         .layer(DefaultBodyLimit::max(30 * 1024 * 1024))
         .layer(cors)
@@ -182,6 +184,28 @@ async fn patch_todo(State(app): State<App>, Path(id): Path<String>, Json(p): Jso
     match app.store.update_todo(&id, p).map_err(internal)? {
         true => Ok(StatusCode::NO_CONTENT.into_response()),
         false => Err((StatusCode::NOT_FOUND, "없는 할일".into())),
+    }
+}
+
+#[derive(Deserialize)]
+struct NewCall {
+    #[serde(default)]
+    who: String,
+    #[serde(default)]
+    memo: String,
+}
+
+async fn add_call(State(app): State<App>, Json(p): Json<NewCall>) -> ApiResult {
+    match app.store.add_call(&p.who, &p.memo).map_err(internal)? {
+        Some(n) => Ok((StatusCode::CREATED, Json(n)).into_response()),
+        None => Err((StatusCode::BAD_REQUEST, "통화 상대나 메모를 입력하세요".into())),
+    }
+}
+
+async fn delete_call(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    match app.store.delete_call(&id).map_err(internal)? {
+        true => Ok(StatusCode::NO_CONTENT.into_response()),
+        false => Err((StatusCode::NOT_FOUND, "없는 메모".into())),
     }
 }
 

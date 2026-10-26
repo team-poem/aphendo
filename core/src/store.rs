@@ -96,6 +96,17 @@ fn clean(s: Option<String>) -> Option<String> {
 pub struct Data {
     pub captures: Vec<Capture>,
     pub todos: Vec<Todo>,
+    #[serde(default)]
+    pub calls: Vec<CallNote>,
+}
+
+/// A phone-call memo: who called and what was said. Kept apart from todos.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallNote {
+    pub id: String,
+    pub who: String,
+    pub memo: String,
+    pub created_at: DateTime<Utc>,
 }
 
 fn normalize(title: &str) -> String {
@@ -237,6 +248,25 @@ impl Store {
             d.todos.len() != before
         })
     }
+
+    /// None when both fields are blank.
+    pub fn add_call(&self, who: &str, memo: &str) -> std::io::Result<Option<CallNote>> {
+        let (who, memo) = (who.trim().to_string(), memo.trim().to_string());
+        if who.is_empty() && memo.is_empty() {
+            return Ok(None);
+        }
+        let note = CallNote { id: new_id(), who, memo, created_at: Utc::now() };
+        self.mutate(|d| d.calls.push(note.clone()))?;
+        Ok(Some(note))
+    }
+
+    pub fn delete_call(&self, id: &str) -> std::io::Result<bool> {
+        self.mutate(|d| {
+            let before = d.calls.len();
+            d.calls.retain(|c| c.id != id);
+            d.calls.len() != before
+        })
+    }
 }
 
 #[cfg(test)]
@@ -284,6 +314,18 @@ mod tests {
         assert_eq!((t.title.as_str(), t.capture_id.as_str(), t.priority), ("주간 보고", "", 2));
         s.update_todo(&t.id, TodoPatch { done: Some(true), ..Default::default() }).unwrap();
         assert!(s.snapshot().todos.iter().any(|x| x.id == t.id && x.done), "completing keeps the record");
+    }
+
+    #[test]
+    fn call_notes_add_and_delete() {
+        let dir = tmp();
+        let s = Store::open(&dir).unwrap();
+        assert!(s.add_call(" ", "").unwrap().is_none());
+        let n = s.add_call(" 김과장 ", "견적 내일까지").unwrap().unwrap();
+        assert_eq!(n.who, "김과장");
+        assert_eq!(Store::open(&dir).unwrap().snapshot().calls.len(), 1, "persists");
+        assert!(s.delete_call(&n.id).unwrap());
+        assert!(s.snapshot().calls.is_empty());
     }
 
     #[test]

@@ -15,7 +15,8 @@ type CaptureStatus =
   | { kind: "done"; added: number }
   | { kind: "failed"; error: string };
 type Capture = { id: string; image: string; status: CaptureStatus; created_at: string };
-type State = { captures: Capture[]; todos: Todo[] };
+type CallNote = { id: string; who: string; memo: string; created_at: string };
+type State = { captures: Capture[]; todos: Todo[]; calls?: CallNote[] };
 
 declare global {
   interface Window {
@@ -187,6 +188,62 @@ function TodoRow({ t, onSource }: { t: Todo; onSource?: (id: string) => void }) 
   );
 }
 
+function CallNotes({ calls }: { calls: CallNote[] }) {
+  const [who, setWho] = useState("");
+  const [memo, setMemo] = useState("");
+  const field = "w-full rounded-sm border border-white/[0.1] bg-white/[0.03] px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500/60";
+  const add = async () => {
+    if (!who.trim() && !memo.trim()) return;
+    await call("/api/calls", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ who, memo }) });
+    setWho("");
+    setMemo("");
+  };
+  return (
+    <div className="p-3">
+      <form
+        className="mb-3 space-y-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          add();
+        }}
+      >
+        <input className={field} placeholder="통화 상대" value={who} onChange={(e) => setWho(e.target.value)} />
+        <textarea
+          className={cn(field, "resize-y")}
+          rows={3}
+          placeholder="메모 (Ctrl+Enter 저장)"
+          value={memo}
+          onChange={(e) => setMemo(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && (e.ctrlKey || e.metaKey) && add()}
+        />
+        <button type="submit" className="w-full rounded-sm bg-orange-500 py-1.5 text-sm font-medium text-[#fff] hover:bg-orange-600 disabled:opacity-40" disabled={!who.trim() && !memo.trim()}>
+          메모 추가
+        </button>
+      </form>
+      {calls.length ? (
+        <ul className="space-y-1">
+          {[...calls].reverse().map((c) => (
+            <li key={c.id} className="group flex items-start gap-2 rounded-sm px-2 py-1.5 hover:bg-white/[0.03]">
+              <div className="min-w-0 flex-1 text-sm">
+                <div className="flex items-baseline gap-2">
+                  <span className="font-medium">{c.who || "상대 미기재"}</span>
+                  <span className="text-xs text-white/35">{format(new Date(c.created_at), "M/d (EEE) HH:mm", { locale: ko })}</span>
+                </div>
+                {c.memo && <p className="mt-0.5 whitespace-pre-wrap break-words text-xs text-white/60">{c.memo}</p>}
+              </div>
+              <button className="shrink-0 rounded px-1 text-white/40 hover:bg-white/10 hover:text-red-300 light:hover:text-red-600" title="삭제" onClick={() => call(`/api/calls/${c.id}`, { method: "DELETE" })}>
+                <X size={14} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="px-2 text-xs text-white/30">통화 메모가 없습니다.</p>
+      )}
+    </div>
+  );
+}
+
 function CaptureView({ c, todos, onClose }: { c: Capture; todos: Todo[]; onClose: () => void }) {
   const [full, setFull] = useState(false);
   return (
@@ -292,7 +349,7 @@ function App() {
   // 현재: every open todo. 날짜/주간/월간: what is due (할 일) or was finished (완료) in that span.
   const [scope, setScope] = useState<"now" | "day" | "week" | "month">("now");
   const [week, setWeek] = useState(false);
-  const [tab, setTab] = useState<"todo" | "done">("todo");
+  const [tab, setTab] = useState<"todo" | "done" | "calls">("todo");
   const [range, setRange] = useState<{ start: Date; end: Date } | null>(null);
   const pickDay = (d: Date) => {
     setSelected(d);
@@ -448,18 +505,20 @@ function App() {
             )}
           </section>
           <div className="flex gap-1 border-b border-white/[0.06] px-3 pt-2">
-            {(["todo", "done"] as const).map((k) => (
+            {(["todo", "done", "calls"] as const).map((k) => (
               <button
                 key={k}
                 className={cn("-mb-px border-b-2 px-3 py-1.5 text-xs font-semibold", tab === k ? "border-orange-500 text-white" : "border-transparent text-white/40 hover:text-white/70")}
                 onClick={() => setTab(k)}
                 title={k === "done" && scope === "now" ? "오늘 완료한 할일" : undefined}
               >
-                {k === "todo" ? `할 일 ${listed.length}` : `완료 ${doneTodos.length}`}
+                {k === "todo" ? `할 일 ${listed.length}` : k === "done" ? `완료 ${doneTodos.length}` : `통화 메모 ${state.calls?.length ?? 0}`}
               </button>
             ))}
           </div>
-          {shown.length ? (
+          {tab === "calls" ? (
+            <CallNotes calls={state.calls ?? []} />
+          ) : shown.length ? (
             <ul className="p-1">{shown.map((t) => <TodoRow key={t.id} t={t} onSource={setViewing} />)}</ul>
           ) : (
             <p className="p-4 text-xs text-white/30">{tab === "todo" ? "남은 할일이 없습니다." : "완료한 할일이 없습니다."}</p>
