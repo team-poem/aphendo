@@ -27,6 +27,7 @@ declare global {
         getCurrentWindow(): TauriWindow;
         LogicalSize: new (w: number, h: number) => unknown;
         PhysicalPosition: new (x: number, y: number) => unknown;
+        currentMonitor(): Promise<{ position: { x: number; y: number } } | null>;
       };
     };
   }
@@ -43,7 +44,6 @@ type TauriWindow = {
   scaleFactor(): Promise<number>;
   outerPosition(): Promise<{ x: number; y: number }>;
   setPosition(p: unknown): Promise<void>;
-  currentMonitor(): Promise<{ position: { x: number; y: number } } | null>;
 };
 
 const tauri = window.__TAURI__;
@@ -406,7 +406,7 @@ async function setCompactWindow(on: boolean) {
   if (!tauri) return;
   const w = tauri.window.getCurrentWindow();
   const size = (width: number, height: number) => new tauri.window.LogicalSize(width, height);
-  const [inner, scale, pos, monitor] = await Promise.all([w.innerSize(), w.scaleFactor(), w.outerPosition(), w.currentMonitor()]);
+  const [inner, scale, pos, monitor] = await Promise.all([w.innerSize(), w.scaleFactor(), w.outerPosition(), tauri.window.currentMonitor()]);
   const next = on ? { width: 260, height: 420 } : (fullSize ?? { width: 1100, height: 760 });
   if (on) fullSize = { width: inner.width / scale, height: inner.height / scale };
   await w.setMinSize(on ? size(200, 240) : size(400, 520));
