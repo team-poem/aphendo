@@ -121,7 +121,7 @@ async function call(path: string, init: RequestInit) {
 
 let refresh: () => void = () => {};
 let openTodo: (id: string) => void = () => {};
-// Reopening moves a todo out of 완료 back to 할 일, on its due day; follow it there so it doesn't seem to vanish.
+// Reopening moves a todo out of 완료 back to 할 일; follow it there so it doesn't seem to vanish.
 let showReopened: (due: string | null) => void = () => {};
 const setDone = (t: Todo, done: boolean) => {
   patchTodo(t.id, { done });
@@ -494,10 +494,10 @@ function App() {
     setSelected(d);
     setScope("day");
   };
+  // Keep the view when the reopened todo belongs in it; otherwise widen to every open todo rather than jump to its day.
   showReopened = (due) => {
     setTab("todo");
-    if (due) pickDay(dueDate(due));
-    else setScope("now");
+    if (scope !== "now" && !(due && inSpan(dueDate(due)))) setScope("now");
   };
   const pickScope = (v: string) => {
     if (v === "week" || v === "month") setWeek(v === "week");
