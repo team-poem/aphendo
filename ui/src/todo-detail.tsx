@@ -43,7 +43,7 @@ export function TodoDetail({
   imageUrl: string | null;
   onClose: () => void;
   onChanged: () => void;
-  onReopen: (due: Date) => void;
+  onReopen: (due: string | null) => void;
 }) {
   const [form, setForm] = useState(() => ({ ...todo, due: todo.due ?? "" }));
   const [zoom, setZoom] = useState(false);
@@ -60,7 +60,7 @@ export function TodoDetail({
     const r = await fetch(`${API}/api/todos${isNew ? "" : `/${todo.id}`}`, init).catch(() => null);
     onChanged();
     if (r?.ok) {
-      if (todo.done && !form.done && form.due) onReopen(new Date(`${form.due}T00:00`));
+      if (todo.done && !form.done) onReopen(form.due || null);
       return onClose();
     }
     setError(r ? await r.text() : "로컬 서버에 연결할 수 없습니다.");

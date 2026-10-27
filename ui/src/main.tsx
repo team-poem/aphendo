@@ -117,11 +117,11 @@ async function call(path: string, init: RequestInit) {
 
 let refresh: () => void = () => {};
 let openTodo: (id: string) => void = () => {};
-// Reopening moves a todo from the day it was done back to its due day; follow it there so it doesn't seem to vanish.
-let showDay: (d: Date) => void = () => {};
+// Reopening moves a todo out of 완료 back to 할 일, on its due day; follow it there so it doesn't seem to vanish.
+let showReopened: (due: string | null) => void = () => {};
 const setDone = (t: Todo, done: boolean) => {
   patchTodo(t.id, { done });
-  if (!done && t.due) showDay(dueDate(t.due));
+  if (!done) showReopened(t.due);
 };
 
 const patchTodo = (id: string, body: { done?: boolean; priority?: number }) =>
@@ -236,13 +236,14 @@ function Chip({ c }: { c: Capture }) {
 }
 
 // One line per todo: the title and how close it is. Sender, method and the capture are in the detail dialog.
-function TodoRow({ t }: { t: Todo }) {
+// `wrap` shows the whole title over several lines, for the narrow mini view.
+function TodoRow({ t, wrap }: { t: Todo; wrap?: boolean }) {
   return (
-    <li className="flex items-center gap-2 rounded-sm px-2 py-1.5 hover:bg-white/[0.03]">
-      <input type="checkbox" className="accent-orange-500" checked={t.done} onChange={(e) => setDone(t, e.target.checked)} />
-      <button className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm" title={`${t.title}\n눌러서 상세 보기`} onClick={() => openTodo(t.id)}>
+    <li className={cn("flex gap-2 rounded-sm px-2 py-1.5 hover:bg-white/[0.03]", wrap ? "items-start" : "items-center")}>
+      <input type="checkbox" className={cn("accent-orange-500", wrap && "mt-1")} checked={t.done} onChange={(e) => setDone(t, e.target.checked)} />
+      <button className={cn("flex min-w-0 flex-1 gap-1.5 text-left text-sm", wrap ? "items-start" : "items-center")} title={`${t.title}\n눌러서 상세 보기`} onClick={() => openTodo(t.id)}>
         {!t.done && t.due && <DDay due={t.due} />}
-        <span className={cn("truncate", t.done && "text-white/40 line-through")}>{t.title}</span>
+        <span className={cn(wrap ? "break-keep [overflow-wrap:anywhere] leading-snug" : "truncate", t.done && "text-white/40 line-through")}>{t.title}</span>
         {t.repeat && <RepeatIcon size={12} className="shrink-0 text-white/40" aria-label={REPEAT_LABEL[t.repeat]} />}
       </button>
       {t.priority > 0 && <span className="shrink-0 text-xs text-amber-400">{"★".repeat(t.priority)}</span>}
@@ -430,7 +431,7 @@ function CompactView({ todos, onExpand }: { todos: Todo[]; onExpand: () => void 
         )}
       </header>
       {todos.length ? (
-        <ul className="min-h-0 flex-1 overflow-y-auto p-1">{todos.map((t) => <TodoRow key={t.id} t={t} />)}</ul>
+        <ul className="min-h-0 flex-1 divide-y divide-white/[0.04] overflow-y-auto p-1">{todos.map((t) => <TodoRow key={t.id} t={t} wrap />)}</ul>
       ) : (
         <p className="p-3 text-xs text-white/30">오늘 할일을 다 끝냈습니다.</p>
       )}
@@ -490,7 +491,11 @@ function App() {
     setSelected(d);
     setScope("day");
   };
-  showDay = pickDay;
+  showReopened = (due) => {
+    setTab("todo");
+    if (due) pickDay(dueDate(due));
+    else setScope("now");
+  };
   const pickScope = (v: string) => {
     if (v === "week" || v === "month") setWeek(v === "week");
 
@@ -606,7 +611,7 @@ function App() {
 
   // Overdue work is still today's work.
   const today = format(startOfToday(), "yyyy-MM-dd");
-  const detail = edited && <TodoDetail key={edited.id} todo={edited} imageUrl={edited.capture_id ? imageUrl(edited.capture_id) : null} onClose={() => setEditing(null)} onChanged={refresh} onReopen={showDay} />;
+  const detail = edited && <TodoDetail key={edited.id} todo={edited} imageUrl={edited.capture_id ? imageUrl(edited.capture_id) : null} onClose={() => setEditing(null)} onChanged={refresh} onReopen={showReopened} />;
   const confirmUpload = staged && <ConfirmUpload images={staged} onClose={() => setStaged(null)} />;
   if (compact)
     return (
@@ -751,7 +756,7 @@ function App() {
           imageUrl={null}
           onClose={() => setAdding(false)}
           onChanged={refresh}
-          onReopen={showDay}
+          onReopen={showReopened}
         />
       )}
       {detail}
