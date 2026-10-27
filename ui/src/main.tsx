@@ -26,6 +26,7 @@ declare global {
       window: {
         getCurrentWindow(): TauriWindow;
         LogicalSize: new (w: number, h: number) => unknown;
+        PhysicalPosition: new (x: number, y: number) => unknown;
       };
     };
   }
@@ -40,6 +41,9 @@ type TauriWindow = {
   setAlwaysOnTop(on: boolean): Promise<void>;
   innerSize(): Promise<{ width: number; height: number }>;
   scaleFactor(): Promise<number>;
+  outerPosition(): Promise<{ x: number; y: number }>;
+  setPosition(p: unknown): Promise<void>;
+  currentMonitor(): Promise<{ position: { x: number; y: number } } | null>;
 };
 
 const tauri = window.__TAURI__;
@@ -396,20 +400,19 @@ function AppVersion() {
 }
 
 // The mini view: a narrow portrait window kept above other windows. Leaving it restores the size it had.
+// Both ways the right edge stays put, so the window grows and shrinks toward the left.
 let fullSize: { width: number; height: number } | null = null;
 async function setCompactWindow(on: boolean) {
   if (!tauri) return;
   const w = tauri.window.getCurrentWindow();
   const size = (width: number, height: number) => new tauri.window.LogicalSize(width, height);
-  if (on) {
-    const [inner, scale] = await Promise.all([w.innerSize(), w.scaleFactor()]);
-    fullSize = { width: inner.width / scale, height: inner.height / scale };
-    await w.setMinSize(size(200, 240));
-    await w.setSize(size(260, 420));
-  } else {
-    await w.setMinSize(size(400, 520));
-    await w.setSize(size(fullSize?.width ?? 1100, fullSize?.height ?? 760));
-  }
+  const [inner, scale, pos, monitor] = await Promise.all([w.innerSize(), w.scaleFactor(), w.outerPosition(), w.currentMonitor()]);
+  const next = on ? { width: 260, height: 420 } : (fullSize ?? { width: 1100, height: 760 });
+  if (on) fullSize = { width: inner.width / scale, height: inner.height / scale };
+  await w.setMinSize(on ? size(200, 240) : size(400, 520));
+  await w.setSize(size(next.width, next.height));
+  const x = Math.max(monitor?.position.x ?? 0, pos.x + inner.width - Math.round(next.width * scale));
+  await w.setPosition(new tauri.window.PhysicalPosition(x, pos.y));
   await w.setAlwaysOnTop(on);
 }
 
