@@ -2,7 +2,7 @@ import { StrictMode, useEffect, useMemo, useState, type MouseEvent, type CSSProp
 import { createRoot } from "react-dom/client";
 import { differenceInCalendarDays, endOfDay, format, isSameDay, isToday, isWithinInterval, parse, startOfDay, startOfToday } from "date-fns";
 import { ko } from "date-fns/locale";
-import { Settings as Gear, Minus, Repeat as RepeatIcon, X } from "lucide-react";
+import { Settings as Gear, Maximize2, Minus, Repeat as RepeatIcon, Shrink, X } from "lucide-react";
 import { API } from "./api";
 import { configured, fetchConfig, Settings, type ConfigView } from "./settings";
 import { FullScreenCalendar, type CalendarData } from "@/components/ui/fullscreen-calendar";
@@ -23,10 +23,24 @@ declare global {
     __TAURI__?: {
       core: { invoke(cmd: string): Promise<unknown> };
       app: { getVersion(): Promise<string> };
-      window: { getCurrentWindow(): { close(): Promise<void>; minimize(): Promise<void>; startDragging(): Promise<void> } };
+      window: {
+        getCurrentWindow(): TauriWindow;
+        LogicalSize: new (w: number, h: number) => unknown;
+      };
     };
   }
 }
+
+type TauriWindow = {
+  close(): Promise<void>;
+  minimize(): Promise<void>;
+  startDragging(): Promise<void>;
+  setSize(s: unknown): Promise<void>;
+  setMinSize(s: unknown): Promise<void>;
+  setAlwaysOnTop(on: boolean): Promise<void>;
+  innerSize(): Promise<{ width: number; height: number }>;
+  scaleFactor(): Promise<number>;
+};
 
 const tauri = window.__TAURI__;
 const dueDate = (due: string) => parse(due, "yyyy-MM-dd", new Date());
@@ -380,8 +394,52 @@ function AppVersion() {
   return v ? <span className="ml-1 text-xs font-normal text-white/30">v{v}</span> : null;
 }
 
+// The mini view: a narrow portrait window kept above other windows. Leaving it restores the size it had.
+let fullSize: { width: number; height: number } | null = null;
+async function setCompactWindow(on: boolean) {
+  if (!tauri) return;
+  const w = tauri.window.getCurrentWindow();
+  const size = (width: number, height: number) => new tauri.window.LogicalSize(width, height);
+  if (on) {
+    const [inner, scale] = await Promise.all([w.innerSize(), w.scaleFactor()]);
+    fullSize = { width: inner.width / scale, height: inner.height / scale };
+    await w.setMinSize(size(200, 240));
+    await w.setSize(size(260, 420));
+  } else {
+    await w.setMinSize(size(400, 520));
+    await w.setSize(size(fullSize?.width ?? 1100, fullSize?.height ?? 760));
+  }
+  await w.setAlwaysOnTop(on);
+}
+
+function CompactView({ todos, onExpand }: { todos: Todo[]; onExpand: () => void }) {
+  return (
+    <div className="flex h-full flex-col">
+      <header onMouseDown={dragWindow} className="flex h-8 shrink-0 select-none items-center gap-1 border-b border-white/[0.06] px-2">
+        <h1 className="flex-1 truncate text-xs font-semibold">
+          오늘 {format(startOfToday(), "M/d (EEE)", { locale: ko })}
+          {todos.length > 0 && <span className="ml-1 rounded-full bg-orange-500 px-1.5 text-[10px] text-[#fff]">{todos.length}</span>}
+        </h1>
+        <button className="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white" title="크게 보기" onClick={onExpand}>
+          <Maximize2 size={13} />
+        </button>
+        {tauri && (
+          <button className="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white" title="최소화" onClick={() => tauri.window.getCurrentWindow().minimize()}>
+            <Minus size={14} />
+          </button>
+        )}
+      </header>
+      {todos.length ? (
+        <ul className="min-h-0 flex-1 overflow-y-auto p-1">{todos.map((t) => <TodoRow key={t.id} t={t} />)}</ul>
+      ) : (
+        <p className="p-3 text-xs text-white/30">오늘 할일을 다 끝냈습니다.</p>
+      )}
+    </div>
+  );
+}
+
 // Wide: lives atop the side panel so the calendar gets the full window height. Narrow: atop everything.
-function TitleBar({ open, className, onSettings }: { open: number; className: string; onSettings: () => void }) {
+function TitleBar({ open, className, onSettings, onCompact }: { open: number; className: string; onSettings: () => void; onCompact: () => void }) {
   return (
     <header onMouseDown={dragWindow} className={cn("flex h-9 shrink-0 select-none items-center gap-2 border-b border-white/[0.06] px-3", className)}>
       <h1 className="flex-1 text-sm font-semibold">
@@ -391,6 +449,9 @@ function TitleBar({ open, className, onSettings }: { open: number; className: st
       <UpdateButton />
       <button className="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white" title="설정" onClick={onSettings}>
         <Gear size={15} />
+      </button>
+      <button className="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white" title="오늘 할일만 작게 보기" onClick={onCompact}>
+        <Shrink size={15} />
       </button>
       {tauri && (
         <button className="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white" title="최소화" onClick={() => tauri.window.getCurrentWindow().minimize()}>
@@ -434,6 +495,11 @@ function App() {
     if (v === "week" || v === "month") setWeek(v === "week");
 
     setScope(v as typeof scope);
+  };
+  const [compact, setCompact] = useState(false);
+  const compactMode = (on: boolean) => {
+    setCompact(on);
+    setCompactWindow(on).catch((e) => setMsgState(`창 크기 변경 실패: ${e}`));
   };
   const [dayOpen, setDayOpen] = useState<Date | null>(null);
   const [staged, setStaged] = useState<Blob[] | null>(null);
@@ -538,9 +604,22 @@ function App() {
   const edited = editing ? state.todos.find((t) => t.id === editing) : undefined;
   const view = viewing ? state.captures.find((c) => c.id === viewing) : undefined;
 
+  // Overdue work is still today's work.
+  const today = format(startOfToday(), "yyyy-MM-dd");
+  const detail = edited && <TodoDetail key={edited.id} todo={edited} imageUrl={edited.capture_id ? imageUrl(edited.capture_id) : null} onClose={() => setEditing(null)} onChanged={refresh} onReopen={showDay} />;
+  const confirmUpload = staged && <ConfirmUpload images={staged} onClose={() => setStaged(null)} />;
+  if (compact)
+    return (
+      <div className="relative h-full">
+        <CompactView todos={openTodos.filter((t) => t.due && t.due <= today).sort(byDue)} onExpand={() => compactMode(false)} />
+        {detail}
+        {confirmUpload}
+      </div>
+    );
+
   return (
     <div className="relative flex h-full flex-col">
-      <TitleBar open={open} className="md:hidden" onSettings={() => setSettingsOpen(true)} />
+      <TitleBar open={open} className="md:hidden" onSettings={() => setSettingsOpen(true)} onCompact={() => compactMode(true)} />
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
         <div className="flex shrink-0 flex-col md:min-w-0 md:flex-1 md:overflow-y-auto">
@@ -587,7 +666,7 @@ function App() {
           className="hidden w-1 shrink-0 cursor-col-resize bg-white/[0.06] hover:bg-orange-500/50 md:block"
         />
         <aside style={{ "--side": `${sideWidth}px` } as CSSProperties} className="border-white/[0.06] md:w-[var(--side)] md:shrink-0 md:overflow-y-auto">
-          <TitleBar open={open} className="hidden md:flex" onSettings={() => setSettingsOpen(true)} />
+          <TitleBar open={open} className="hidden md:flex" onSettings={() => setSettingsOpen(true)} onCompact={() => compactMode(true)} />
           {config && !configured(config) && (
             <button className="block w-full border-b border-white/[0.06] bg-orange-500/10 p-3 text-left text-xs text-orange-300 light:text-orange-700 hover:bg-orange-500/20" onClick={() => setSettingsOpen(true)}>
               접속 토큰이 없어 캡처를 분석할 수 없습니다. ⚙ 설정을 눌러 입력하세요.
@@ -664,7 +743,7 @@ function App() {
           onClose={() => setDayOpen(null)}
         />
       )}
-      {staged && <ConfirmUpload images={staged} onClose={() => setStaged(null)} />}
+      {confirmUpload}
       {view && <CaptureView c={view} todos={state.todos.filter((t) => t.capture_id === view.id)} onClose={() => setViewing(null)} />}
       {adding && (
         <TodoDetail
@@ -675,7 +754,7 @@ function App() {
           onReopen={showDay}
         />
       )}
-      {edited && <TodoDetail key={edited.id} todo={edited} imageUrl={edited.capture_id ? imageUrl(edited.capture_id) : null} onClose={() => setEditing(null)} onChanged={refresh} onReopen={showDay} />}
+      {detail}
       {settingsOpen && <Settings config={config} onClose={() => setSettingsOpen(false)} onSaved={setConfig} />}
       {dragging && (
         <div className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-md border-2 border-dashed border-orange-500/60 bg-orange-500/[0.06] text-sm text-orange-300">
