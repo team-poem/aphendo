@@ -96,7 +96,7 @@ const dragWindow = (e: MouseEvent) => {
 // Open first, then more stars, then oldest.
 const byPriority = (a: Todo, b: Todo) => Number(a.done) - Number(b.done) || b.priority - a.priority || a.created_at.localeCompare(b.created_at);
 
-// Done todos live in the 완료 section of the day they were checked off. Older ones have no stamp.
+// The day a todo was checked off. Older ones have no stamp.
 const doneDay = (t: Todo) => (t.done_at ? new Date(t.done_at) : t.due ? dueDate(t.due) : new Date(t.created_at));
 // Soonest due first; no due date goes last.
 const byDue = (a: Todo, b: Todo) => (a.due ?? "9999").localeCompare(b.due ?? "9999") || byPriority(a, b);
@@ -606,7 +606,8 @@ function App() {
   const inSpan = (d: Date) => (span ? isWithinInterval(d, { start: startOfDay(span.start), end: endOfDay(span.end) }) : isToday(d));
   const openTodos = state.todos.filter((t) => !t.done);
   const listed = (scope === "now" ? openTodos : openTodos.filter((t) => t.due && inSpan(dueDate(t.due)))).sort(byDue);
-  const doneTodos = state.todos.filter((t) => t.done && inSpan(doneDay(t))).sort((a, b) => (b.done_at ?? "").localeCompare(a.done_at ?? ""));
+  // Also under its due day: completing a todo while that day is picked must not make it vanish from both tabs.
+  const doneTodos = state.todos.filter((t) => t.done && (inSpan(doneDay(t)) || (scope !== "now" && !!t.due && inSpan(dueDate(t.due))))).sort((a, b) => (b.done_at ?? "").localeCompare(a.done_at ?? ""));
   const shown = tab === "todo" ? listed : doneTodos;
   const open = state.todos.filter((t) => !t.done).length;
   const edited = editing ? state.todos.find((t) => t.id === editing) : undefined;
