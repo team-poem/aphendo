@@ -15,8 +15,11 @@ export type Todo = {
   done: boolean;
   done_at: string | null;
   priority: number;
+  repeat: Repeat | null;
   created_at: string;
 };
+export type Repeat = "weekly" | "monthly";
+export const REPEAT_LABEL: Record<Repeat, string> = { weekly: "매주", monthly: "매월" };
 
 type Text = "title" | "sender" | "method" | "contact" | "detail";
 const FIELDS: { key: Text; label: string; long?: boolean }[] = [
@@ -75,6 +78,7 @@ export function TodoDetail({
         contact: form.contact ?? "",
         detail: form.detail ?? "",
         priority: form.priority,
+        repeat: form.repeat,
         ...(!isNew && { done: form.done }),
       }),
     });
@@ -141,6 +145,20 @@ export function TodoDetail({
                   </button>
                 )}
               </div>
+            </label>
+
+            <label className="block text-xs text-white/50">
+              반복
+              <select
+                className={input}
+                value={form.repeat ?? ""}
+                onChange={(e) => setForm({ ...form, repeat: (e.target.value || null) as Repeat | null })}
+                title="완료하면 다음 주·다음 달 같은 날짜로 새 할일이 생깁니다"
+              >
+                <option value="">반복 안 함</option>
+                <option value="weekly">매주 (완료하면 다음 주 할일 생성)</option>
+                <option value="monthly">매월 (완료하면 다음 달 할일 생성)</option>
+              </select>
             </label>
 
             <div className="flex items-center gap-4 text-xs text-white/50">

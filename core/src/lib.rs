@@ -162,13 +162,15 @@ struct NewTodo {
     todo: remote::ExtractedTodo,
     #[serde(default)]
     priority: u8,
+    #[serde(default)]
+    repeat: Option<store::Repeat>,
 }
 
 async fn add_todo(State(app): State<App>, Json(p): Json<NewTodo>) -> ApiResult {
     if p.priority > 3 {
         return Err((StatusCode::BAD_REQUEST, "중요도는 0~3".into()));
     }
-    match app.store.add_todo(p.todo, p.priority).map_err(internal)? {
+    match app.store.add_todo(p.todo, p.priority, p.repeat).map_err(internal)? {
         Some(t) => Ok((StatusCode::CREATED, Json(t)).into_response()),
         None => Err((StatusCode::BAD_REQUEST, "업무내용은 비울 수 없습니다".into())),
     }

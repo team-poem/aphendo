@@ -1,5 +1,5 @@
 use crate::remote::ExtractedTodo;
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Days, Months, NaiveDate, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -41,7 +41,27 @@ pub struct Todo {
     /// 0 = unset, 1..=3 stars.
     #[serde(default)]
     pub priority: u8,
+    /// Checking off a repeating todo adds its next occurrence.
+    #[serde(default)]
+    pub repeat: Option<Repeat>,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Repeat {
+    Weekly,
+    Monthly,
+}
+
+impl Repeat {
+    /// Monthly clamps to the month's last day (1/31 → 2/28).
+    fn next(self, d: NaiveDate) -> NaiveDate {
+        match self {
+            Repeat::Weekly => d + Days::new(7),
+            Repeat::Monthly => d.checked_add_months(Months::new(1)).unwrap_or(d),
+        }
+    }
 }
 
 impl Todo {
@@ -59,6 +79,7 @@ impl Todo {
             done: false,
             done_at: None,
             priority: 0,
+            repeat: None,
             created_at: Utc::now(),
         }
     }
@@ -71,6 +92,8 @@ pub struct TodoPatch {
     pub done: Option<bool>,
     pub priority: Option<u8>,
     pub title: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    pub repeat: Option<Option<Repeat>>,
     #[serde(default, deserialize_with = "present")]
     pub due: Option<Option<NaiveDate>>,
     #[serde(default, deserialize_with = "present")]
@@ -208,36 +231,46 @@ impl Store {
     }
 
     /// A todo with no capture behind it. None when the title is blank.
-    pub fn add_todo(&self, item: ExtractedTodo, priority: u8) -> std::io::Result<Option<Todo>> {
+    pub fn add_todo(&self, item: ExtractedTodo, priority: u8, repeat: Option<Repeat>) -> std::io::Result<Option<Todo>> {
         let Some(title) = clean(Some(item.title.clone())) else { return Ok(None) };
-        let todo = Todo { priority, ..Todo::new("", title, item) };
+        let todo = Todo { priority, repeat, ..Todo::new("", title, item) };
         self.mutate(|d| d.todos.push(todo.clone()))?;
         Ok(Some(todo))
     }
 
     /// Returns false when no todo has this id.
     pub fn update_todo(&self, id: &str, p: TodoPatch) -> std::io::Result<bool> {
-        self.mutate(|d| match d.todos.iter_mut().find(|t| t.id == id) {
-            Some(t) => {
-                if let Some(done) = p.done.filter(|&d| d != t.done) {
-                    t.done = done;
-                    t.done_at = done.then(Utc::now);
-                }
-                t.priority = p.priority.unwrap_or(t.priority);
-                if let Some(title) = clean(p.title) {
-                    t.title = title;
-                }
-                if let Some(due) = p.due {
-                    t.due = due;
-                }
-                for (field, v) in [(&mut t.sender, p.sender), (&mut t.method, p.method), (&mut t.contact, p.contact), (&mut t.detail, p.detail)] {
-                    if let Some(v) = v {
-                        *field = clean(v);
-                    }
-                }
-                true
+        self.mutate(|d| {
+            let Some(t) = d.todos.iter_mut().find(|t| t.id == id) else { return false };
+            let checked_off = p.done == Some(true) && !t.done;
+            if let Some(done) = p.done.filter(|&d| d != t.done) {
+                t.done = done;
+                t.done_at = done.then(Utc::now);
             }
-            None => false,
+            t.priority = p.priority.unwrap_or(t.priority);
+            if let Some(repeat) = p.repeat {
+                t.repeat = repeat;
+            }
+            if let Some(title) = clean(p.title) {
+                t.title = title;
+            }
+            if let Some(due) = p.due {
+                t.due = due;
+            }
+            for (field, v) in [(&mut t.sender, p.sender), (&mut t.method, p.method), (&mut t.contact, p.contact), (&mut t.detail, p.detail)] {
+                if let Some(v) = v {
+                    *field = clean(v);
+                }
+            }
+            if let (true, Some(repeat)) = (checked_off, t.repeat) {
+                let due = repeat.next(t.due.unwrap_or_else(|| chrono::Local::now().date_naive()));
+                let next = Todo { id: new_id(), due: Some(due), done: false, done_at: None, created_at: Utc::now(), ..t.clone() };
+                // Unchecking and checking again must not stack a second copy.
+                if !d.todos.iter().any(|o| !o.done && o.title == next.title && o.due == next.due) {
+                    d.todos.push(next);
+                }
+            }
+            true
         })
     }
 
@@ -309,11 +342,33 @@ mod tests {
     #[test]
     fn manual_todo_needs_a_title_and_survives_completion() {
         let s = Store::open(&tmp()).unwrap();
-        assert!(s.add_todo(item("  "), 0).unwrap().is_none());
-        let t = s.add_todo(ExtractedTodo { title: " 주간 보고 ".into(), sender: Some("팀장".into()), ..Default::default() }, 2).unwrap().unwrap();
+        assert!(s.add_todo(item("  "), 0, None).unwrap().is_none());
+        let t = s.add_todo(ExtractedTodo { title: " 주간 보고 ".into(), sender: Some("팀장".into()), ..Default::default() }, 2, None).unwrap().unwrap();
         assert_eq!((t.title.as_str(), t.capture_id.as_str(), t.priority), ("주간 보고", "", 2));
         s.update_todo(&t.id, TodoPatch { done: Some(true), ..Default::default() }).unwrap();
         assert!(s.snapshot().todos.iter().any(|x| x.id == t.id && x.done), "completing keeps the record");
+    }
+
+    #[test]
+    fn checking_off_a_repeating_todo_adds_the_next_one() {
+        let s = Store::open(&tmp()).unwrap();
+        let due = NaiveDate::from_ymd_opt(2026, 1, 31);
+        let t = s.add_todo(ExtractedTodo { title: "월간 보고".into(), due, ..Default::default() }, 1, Some(Repeat::Monthly)).unwrap().unwrap();
+        let done = || TodoPatch { done: Some(true), ..Default::default() };
+        s.update_todo(&t.id, done()).unwrap();
+        s.update_todo(&t.id, TodoPatch { done: Some(false), ..Default::default() }).unwrap();
+        s.update_todo(&t.id, done()).unwrap();
+        let open: Vec<_> = s.snapshot().todos.into_iter().filter(|x| !x.done && x.id != t.id).collect();
+        assert_eq!(open.len(), 1, "re-checking does not stack copies");
+        assert_eq!((open[0].due, open[0].priority, open[0].repeat), (NaiveDate::from_ymd_opt(2026, 2, 28), 1, Some(Repeat::Monthly)));
+
+        let w = s.add_todo(ExtractedTodo { title: "주간업무보고".into(), due: NaiveDate::from_ymd_opt(2026, 10, 30), ..Default::default() }, 0, Some(Repeat::Weekly)).unwrap().unwrap();
+        s.update_todo(&w.id, done()).unwrap();
+        assert!(s.snapshot().todos.iter().any(|x| !x.done && x.due == NaiveDate::from_ymd_opt(2026, 11, 6)));
+        let off: TodoPatch = serde_json::from_str(r#"{"repeat":null}"#).unwrap();
+        s.update_todo(&open[0].id, off).unwrap();
+        s.update_todo(&open[0].id, done()).unwrap();
+        assert!(!s.snapshot().todos.iter().any(|x| !x.done && x.title == "월간 보고"), "repeat off stops the chain");
     }
 
     #[test]

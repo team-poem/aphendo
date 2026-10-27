@@ -1,13 +1,13 @@
-import { StrictMode, useEffect, useMemo, useState, type MouseEvent } from "react";
+import { StrictMode, useEffect, useMemo, useState, type MouseEvent, type CSSProperties, type PointerEvent, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { endOfDay, format, isToday, isWithinInterval, parse, startOfDay, startOfToday } from "date-fns";
+import { differenceInCalendarDays, endOfDay, format, isSameDay, isToday, isWithinInterval, parse, startOfDay, startOfToday } from "date-fns";
 import { ko } from "date-fns/locale";
-import { Settings as Gear, Minus, X } from "lucide-react";
+import { Settings as Gear, Minus, Repeat as RepeatIcon, X } from "lucide-react";
 import { API } from "./api";
 import { configured, fetchConfig, Settings, type ConfigView } from "./settings";
 import { FullScreenCalendar, type CalendarData } from "@/components/ui/fullscreen-calendar";
 import { cn } from "@/lib/utils";
-import { TodoDetail, type Todo } from "./todo-detail";
+import { REPEAT_LABEL, TodoDetail, type Todo } from "./todo-detail";
 
 type CaptureStatus =
   | { kind: "queued" }
@@ -56,6 +56,16 @@ const readTabOrder = (): Tab[] => {
   } catch {}
   return [...TABS];
 };
+
+// Width of the side list in px, dragged by the divider and kept per PC.
+const readSideWidth = () => {
+  try {
+    return Number(localStorage.getItem("sideWidth")) || 320;
+  } catch {
+    return 320;
+  }
+};
+const clampSide = (w: number) => Math.round(Math.min(Math.max(w, 240), window.innerWidth * 0.7));
 
 const imageUrl = (id: string) => `${API}/api/captures/${id}/image`;
 
@@ -111,10 +121,16 @@ async function asPngOrJpeg(file: Blob): Promise<Blob> {
   return canvas.convertToBlob({ type: "image/png" });
 }
 
-async function upload(files: Blob[]) {
+// A paste or drop only stages images; nothing goes to the analyzer until the user confirms.
+let stage: (images: Blob[]) => void = () => {};
+function upload(files: Blob[]) {
   const images = files.filter((f) => f.type.startsWith("image/"));
   if (!images.length) return setMsg("이미지가 아닙니다. 캡처 후 Ctrl+V 하세요.");
   setMsg("");
+  stage(images);
+}
+
+async function analyze(images: Blob[]) {
   for (const f of images) {
     const img = await asPngOrJpeg(f).catch(() => null);
     if (!img) {
@@ -123,6 +139,62 @@ async function upload(files: Blob[]) {
     }
     await call("/api/captures", { method: "POST", headers: { "Content-Type": img.type }, body: img });
   }
+}
+
+function ConfirmUpload({ images, onClose }: { images: Blob[]; onClose: () => void }) {
+  const urls = useMemo(() => images.map((b) => URL.createObjectURL(b)), [images]);
+  useEffect(() => () => urls.forEach(URL.revokeObjectURL), [urls]);
+  const ok = () => {
+    onClose();
+    analyze(images);
+  };
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => (e.key === "Escape" ? onClose() : e.key === "Enter" && ok());
+    document.addEventListener("keydown", key);
+    return () => document.removeEventListener("keydown", key);
+  });
+  return (
+    <Modal title={`이 이미지${images.length > 1 ? ` ${images.length}장` : ""}에서 할일을 뽑을까요?`} onClose={onClose}>
+      <div className="max-h-[60vh] space-y-2 overflow-y-auto p-3">
+        {urls.map((u) => <img key={u} src={u} alt="붙여넣은 이미지" className="mx-auto max-w-full rounded-sm border border-white/[0.08]" />)}
+      </div>
+      <div className="flex justify-end gap-2 border-t border-white/[0.06] p-3">
+        <button className="rounded-sm border border-white/[0.1] px-3 py-1.5 text-sm text-white/70 hover:bg-white/10" onClick={onClose}>
+          취소
+        </button>
+        <button autoFocus className="rounded-sm bg-orange-500 px-3 py-1.5 text-sm font-medium text-[#fff] hover:bg-orange-600" onClick={ok}>
+          분석 시작
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  return (
+    <div className="absolute inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/60 p-4" onClick={onClose}>
+      <div role="dialog" aria-label={title} className="flex w-full max-w-md flex-col overflow-hidden rounded-md border border-white/[0.08] bg-background shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center border-b border-white/[0.06] px-4 py-2.5">
+          <h2 className="flex-1 text-sm font-semibold">{title}</h2>
+          <button className="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white" title="닫기" onClick={onClose}>
+            <X size={16} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// D-3 before, D-day on, D+2 after the due date.
+function DDay({ due }: { due: string }) {
+  const n = differenceInCalendarDays(dueDate(due), startOfToday());
+  const cls = n < 0 ? "bg-red-500/20 text-red-300 light:text-red-700" : n <= 3 ? "bg-orange-500/20 text-orange-300 light:text-orange-700" : "bg-white/10 text-white/50";
+  return (
+    <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold tabular-nums leading-none", cls)} title={`마감 ${format(dueDate(due), "M/d (EEE)", { locale: ko })}`}>
+      {n === 0 ? "D-day" : n > 0 ? `D-${n}` : `D+${-n}`}
+    </span>
+  );
 }
 
 function Chip({ c }: { c: Capture }) {
@@ -149,53 +221,34 @@ function Chip({ c }: { c: Capture }) {
   );
 }
 
-// Clicking the current level clears it.
-function Stars({ t }: { t: Todo }) {
+// One line per todo: the title and how close it is. Sender, method and the capture are in the detail dialog.
+function TodoRow({ t }: { t: Todo }) {
   return (
-    <div className="flex shrink-0" title="중요도">
-      {[1, 2, 3].map((n) => (
-        <button
-          key={n}
-          aria-label={`중요도 ${n}`}
-          className={cn("px-px text-sm leading-none", n <= t.priority ? "text-amber-400" : "text-white/20 hover:text-amber-300/70")}
-          onClick={() => patchTodo(t.id, { priority: t.priority === n ? 0 : n })}
-        >
-          ★
-        </button>
-      ))}
-    </div>
+    <li className="flex items-center gap-2 rounded-sm px-2 py-1.5 hover:bg-white/[0.03]">
+      <input type="checkbox" className="accent-orange-500" checked={t.done} onChange={(e) => setDone(t, e.target.checked)} />
+      <button className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm" title={`${t.title}\n눌러서 상세 보기`} onClick={() => openTodo(t.id)}>
+        {!t.done && t.due && <DDay due={t.due} />}
+        <span className={cn("truncate", t.done && "text-white/40 line-through")}>{t.title}</span>
+        {t.repeat && <RepeatIcon size={12} className="shrink-0 text-white/40" aria-label={REPEAT_LABEL[t.repeat]} />}
+      </button>
+      {t.priority > 0 && <span className="shrink-0 text-xs text-amber-400">{"★".repeat(t.priority)}</span>}
+    </li>
   );
 }
 
-function TodoRow({ t, onSource }: { t: Todo; onSource?: (id: string) => void }) {
-  // Kept to one line; every field is in the detail dialog.
-  const meta = [
-    t.due && `마감 ${format(dueDate(t.due), "M/d (EEE)", { locale: ko })}`,
-    t.done_at && `완료 ${format(new Date(t.done_at), "M/d HH:mm")}`,
-    t.sender,
-  ].filter(Boolean).join(" · ");
+function DayTodos({ day, todos, onAdd, onClose }: { day: Date; todos: Todo[]; onAdd: () => void; onClose: () => void }) {
+  useEffect(() => {
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    document.addEventListener("keydown", esc);
+    return () => document.removeEventListener("keydown", esc);
+  }, [onClose]);
   return (
-    <li className="group flex items-start gap-2 rounded-sm px-2 py-1.5 hover:bg-white/[0.03]">
-      <input
-        type="checkbox"
-        className="mt-0.5 accent-orange-500"
-        checked={t.done}
-        onChange={(e) => setDone(t, e.target.checked)}
-      />
-      <div className="min-w-0 flex-1 cursor-pointer text-sm" title="눌러서 확인·수정" onClick={() => openTodo(t.id)}>
-        <div className={cn("break-words", t.done && "text-white/40 line-through")}>{t.title}</div>
-        {meta && <div className="mt-0.5 truncate text-xs text-white/40">{meta}</div>}
-      </div>
-      <Stars t={t} />
-      {onSource && t.capture_id && (
-        <button className="shrink-0 rounded px-1.5 text-xs text-white/50 hover:bg-white/10 hover:text-white" title="원본 캡처 보기" onClick={() => onSource(t.capture_id)}>
-          원본
-        </button>
-      )}
-      <button className="shrink-0 rounded px-1 text-white/40 hover:bg-white/10 hover:text-red-300 light:hover:text-red-600" title="삭제" onClick={() => call(`/api/todos/${t.id}`, { method: "DELETE" })}>
-        <X size={14} />
+    <Modal title={`${format(day, "M월 d일 (EEE)", { locale: ko })} 할일 ${todos.length}`} onClose={onClose}>
+      {todos.length ? <ul className="max-h-[60vh] overflow-y-auto p-1">{todos.map((t) => <TodoRow key={t.id} t={t} />)}</ul> : <p className="p-4 text-xs text-white/30">이 날짜에 마감인 할일이 없습니다.</p>}
+      <button className="border-t border-white/[0.06] p-2.5 text-sm text-white/60 hover:bg-white/[0.04] hover:text-white" onClick={onAdd}>
+        + 이 날짜에 할일 추가
       </button>
-    </li>
+    </Modal>
   );
 }
 
@@ -382,6 +435,25 @@ function App() {
 
     setScope(v as typeof scope);
   };
+  const [dayOpen, setDayOpen] = useState<Date | null>(null);
+  const [staged, setStaged] = useState<Blob[] | null>(null);
+  stage = setStaged;
+  const [sideWidth, setSideWidth] = useState(readSideWidth);
+  const resize = (e: PointerEvent) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const move = (m: globalThis.PointerEvent) => setSideWidth(clampSide(window.innerWidth - m.clientX));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      setSideWidth((w) => {
+        try {
+          localStorage.setItem("sideWidth", String(w));
+        } catch {}
+        return w;
+      });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up, { once: true });
+  };
   const [viewing, setViewing] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -480,6 +552,7 @@ function App() {
             onToggleTheme={toggleTheme}
             onHeaderMouseDown={dragWindow}
             onEventClick={(id) => setEditing(String(id))}
+            onDayClick={(d) => state.todos.some((t) => t.due && isSameDay(dueDate(t.due), d)) && setDayOpen(d)}
             onRangeChange={(start, end) => setRange({ start, end })}
             week={week}
             control={
@@ -500,7 +573,20 @@ function App() {
           />
         </div>
 
-        <aside className="border-white/[0.06] md:w-80 md:shrink-0 md:overflow-y-auto md:border-l">
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          title="끌어서 달력과 목록 크기 조절 · 두 번 눌러 기본값"
+          onPointerDown={resize}
+          onDoubleClick={() => {
+            setSideWidth(320);
+            try {
+              localStorage.removeItem("sideWidth");
+            } catch {}
+          }}
+          className="hidden w-1 shrink-0 cursor-col-resize bg-white/[0.06] hover:bg-orange-500/50 md:block"
+        />
+        <aside style={{ "--side": `${sideWidth}px` } as CSSProperties} className="border-white/[0.06] md:w-[var(--side)] md:shrink-0 md:overflow-y-auto">
           <TitleBar open={open} className="hidden md:flex" onSettings={() => setSettingsOpen(true)} />
           {config && !configured(config) && (
             <button className="block w-full border-b border-white/[0.06] bg-orange-500/10 p-3 text-left text-xs text-orange-300 light:text-orange-700 hover:bg-orange-500/20" onClick={() => setSettingsOpen(true)}>
@@ -559,7 +645,7 @@ function App() {
           {tab === "calls" ? (
             <CallNotes calls={state.calls ?? []} />
           ) : shown.length ? (
-            <ul className="p-1">{shown.map((t) => <TodoRow key={t.id} t={t} onSource={setViewing} />)}</ul>
+            <ul className="p-1">{shown.map((t) => <TodoRow key={t.id} t={t} />)}</ul>
           ) : (
             <p className="p-4 text-xs text-white/30">{tab === "todo" ? "남은 할일이 없습니다." : "완료한 할일이 없습니다."}</p>
           )}
@@ -567,10 +653,22 @@ function App() {
         </aside>
       </div>
 
+      {dayOpen && (
+        <DayTodos
+          day={dayOpen}
+          todos={state.todos.filter((t) => t.due && isSameDay(dueDate(t.due), dayOpen)).sort(byPriority)}
+          onAdd={() => {
+            setDayOpen(null);
+            setAdding(true);
+          }}
+          onClose={() => setDayOpen(null)}
+        />
+      )}
+      {staged && <ConfirmUpload images={staged} onClose={() => setStaged(null)} />}
       {view && <CaptureView c={view} todos={state.todos.filter((t) => t.capture_id === view.id)} onClose={() => setViewing(null)} />}
       {adding && (
         <TodoDetail
-          todo={{ id: "", capture_id: "", title: "", due: format(selected, "yyyy-MM-dd"), sender: null, method: null, contact: null, detail: null, done: false, done_at: null, priority: 0, created_at: "" }}
+          todo={{ id: "", capture_id: "", title: "", due: format(selected, "yyyy-MM-dd"), sender: null, method: null, contact: null, detail: null, done: false, done_at: null, priority: 0, repeat: null, created_at: "" }}
           imageUrl={null}
           onClose={() => setAdding(false)}
           onChanged={refresh}

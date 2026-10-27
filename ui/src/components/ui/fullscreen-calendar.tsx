@@ -45,6 +45,8 @@ export interface FullScreenCalendarProps {
   /** Mouse down on empty header space; the widget uses it to move the window. */
   onHeaderMouseDown?: (e: React.MouseEvent) => void;
   onEventClick?: (id: string | number) => void;
+  /** A day cell the user clicked, as opposed to paging that moves the selection. */
+  onDayClick?: (day: Date) => void;
   /** The visible week or month (not the padding days), whenever it changes. */
   onRangeChange?: (start: Date, end: Date) => void;
   /** Week grid instead of month grid. */
@@ -73,6 +75,7 @@ export function FullScreenCalendar({
   onSelectDay,
   onHeaderMouseDown,
   onEventClick,
+  onDayClick,
   onRangeChange,
   week,
   control,
@@ -245,7 +248,10 @@ export function FullScreenCalendar({
             {days.map((day, dayIdx) => (
               <div
                 key={dayIdx}
-                onClick={() => setSelectedDay(day)}
+                onClick={() => {
+                  setSelectedDay(day);
+                  onDayClick?.(day);
+                }}
                 className={cn(
                   dayIdx === 0 && colStartClasses[getDay(day)],
                   !week && !isSameMonth(day, firstDayCurrentMonth) && 'opacity-40',
@@ -319,7 +325,10 @@ export function FullScreenCalendar({
           <div className={cn('isolate grid w-full grid-cols-7 grid-rows-5 border-x border-white/[0.06] lg:hidden', week && 'hidden')}>
             {days.map((day, dayIdx) => (
               <button
-                onClick={() => setSelectedDay(day)}
+                onClick={() => {
+                  setSelectedDay(day);
+                  onDayClick?.(day);
+                }}
                 key={dayIdx}
                 type="button"
                 className={cn(
