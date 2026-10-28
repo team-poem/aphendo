@@ -206,6 +206,19 @@ impl Store {
         })
     }
 
+    /// Removes a finished capture and returns its image file name. Its todos stay, detached as if
+    /// typed in. None when the capture is missing or still in progress.
+    pub fn delete_capture(&self, capture_id: &str) -> std::io::Result<Option<String>> {
+        self.mutate(|d| {
+            let i = d.captures.iter().position(|c| c.id == capture_id)?;
+            if matches!(d.captures[i].status, CaptureStatus::Queued | CaptureStatus::Running) {
+                return None;
+            }
+            d.todos.iter_mut().filter(|t| t.capture_id == capture_id).for_each(|t| t.capture_id.clear());
+            Some(d.captures.remove(i).image)
+        })
+    }
+
     /// Appends the remote result and marks the capture Done. Skips a title this capture already
     /// produced, and one another capture already holds with the same due date (the same notice
     /// captured twice), so deleting a todo never leaves an identical twin behind. Returns how many were new.
@@ -314,6 +327,18 @@ mod tests {
 
     fn item(title: &str) -> ExtractedTodo {
         ExtractedTodo { title: title.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn delete_capture_keeps_todos_and_refuses_in_progress() {
+        let s = Store::open(&tmp()).unwrap();
+        let c = s.create_capture(new_id(), "a.png".into()).unwrap();
+        assert_eq!(s.delete_capture(&c.id).unwrap(), None, "queued");
+        s.complete(&c.id, vec![item("보고서 제출")]).unwrap();
+        assert_eq!(s.delete_capture(&c.id).unwrap().as_deref(), Some("a.png"));
+        let d = s.snapshot();
+        assert!(d.captures.is_empty());
+        assert_eq!((d.todos.len(), d.todos[0].capture_id.as_str()), (1, ""));
     }
 
     #[test]

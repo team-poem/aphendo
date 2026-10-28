@@ -54,6 +54,7 @@ pub fn router(dir: PathBuf) -> std::io::Result<Router> {
         .route("/api/config/test", post(test_config))
         .route("/api/captures", post(post_capture))
         .route("/api/captures/{id}/image", get(capture_image))
+        .route("/api/captures/{id}", axum::routing::delete(delete_capture))
         .route("/api/captures/{id}/retry", post(retry_capture))
         .route("/api/todos", post(add_todo))
         .route("/api/calls", post(add_call))
@@ -117,6 +118,17 @@ async fn retry_capture(State(app): State<App>, Path(id): Path<String>) -> ApiRes
             Ok((StatusCode::ACCEPTED, Json(capture)).into_response())
         }
         None => Err((StatusCode::CONFLICT, "분석 중인 캡처는 다시 분석할 수 없음".into())),
+    }
+}
+
+async fn delete_capture(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    match app.store.delete_capture(&id).map_err(internal)? {
+        Some(image) => {
+            // The record is gone either way; a leftover file only costs disk.
+            let _ = tokio::fs::remove_file(app.dir.join("images").join(image)).await;
+            Ok(StatusCode::NO_CONTENT.into_response())
+        }
+        None => Err((StatusCode::CONFLICT, "없거나 분석 중인 캡처는 지울 수 없음".into())),
     }
 }
 

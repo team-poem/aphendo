@@ -329,6 +329,8 @@ function CallNotes({ calls }: { calls: CallNote[] }) {
 
 function CaptureView({ c, todos, onClose }: { c: Capture; todos: Todo[]; onClose: () => void }) {
   const [full, setFull] = useState(false);
+  const [sure, setSure] = useState(false);
+  const finished = c.status.kind === "done" || c.status.kind === "failed";
   return (
     <div className="absolute inset-0 z-20 flex flex-col overflow-y-auto bg-background">
       <div onMouseDown={dragWindow} className="flex select-none items-center gap-3 border-b border-white/[0.06] p-3 text-sm">
@@ -337,13 +339,23 @@ function CaptureView({ c, todos, onClose }: { c: Capture; todos: Todo[]; onClose
         </button>
         <span className="text-white/40">{new Date(c.created_at).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" })}</span>
         <Chip c={c} />
-        {(c.status.kind === "done" || c.status.kind === "failed") && (
+        {finished && (
           <button
             className="ml-auto rounded-sm border border-white/[0.1] px-2 py-1 text-xs text-white/70 hover:bg-white/10 hover:text-white"
             title="이 캡처에서 할일을 다시 뽑습니다. 지운 할일도 다시 생깁니다."
             onClick={() => call(`/api/captures/${c.id}/retry`, { method: "POST" })}
           >
             다시 분석
+          </button>
+        )}
+        {finished && (
+          <button
+            className={cn("rounded-sm border px-2 py-1 text-xs", sure ? "border-red-500/60 bg-red-500/15 text-red-300 light:text-red-700" : "border-white/[0.1] text-white/70 hover:bg-red-500/10 hover:text-red-300")}
+            title="캡처 이미지를 지웁니다. 여기서 나온 할일은 남습니다."
+            onBlur={() => setSure(false)}
+            onClick={() => (sure ? call(`/api/captures/${c.id}`, { method: "DELETE" }).then(onClose) : setSure(true))}
+          >
+            {sure ? "정말 삭제" : "이미지 삭제"}
           </button>
         )}
       </div>
