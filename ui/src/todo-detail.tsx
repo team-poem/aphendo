@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { format } from "date-fns";
 import { X } from "lucide-react";
 import { API } from "./api";
 import { cn } from "@/lib/utils";
@@ -14,6 +15,7 @@ export type Todo = {
   detail: string | null;
   done: boolean;
   done_at: string | null;
+  done_note: string | null;
   priority: number;
   repeat: Repeat | null;
   created_at: string;
@@ -38,12 +40,15 @@ export function TodoDetail({
   onClose,
   onChanged,
   onReopen,
+  onFinish,
 }: {
   todo: Todo;
   imageUrl: string | null;
   onClose: () => void;
   onChanged: () => void;
   onReopen: (due: string | null) => void;
+  /** Checking 완료 saves the edits and hands over to the completion dialog. */
+  onFinish?: (t: Todo) => void;
 }) {
   const [form, setForm] = useState(() => ({ ...todo, due: todo.due ?? "" }));
   const [zoom, setZoom] = useState(false);
@@ -61,12 +66,14 @@ export function TodoDetail({
     onChanged();
     if (r?.ok) {
       if (todo.done && !form.done) onReopen(form.due || null);
-      return onClose();
+      onClose();
+      return true;
     }
     setError(r ? await r.text() : "로컬 서버에 연결할 수 없습니다.");
+    return false;
   }
 
-  const save = () =>
+  const save = (withDone = !isNew) =>
     send({
       method: isNew ? "POST" : "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -79,7 +86,7 @@ export function TodoDetail({
         detail: form.detail ?? "",
         priority: form.priority,
         repeat: form.repeat,
-        ...(!isNew && { done: form.done }),
+        ...(withDone && { done: form.done }),
       }),
     });
 
@@ -177,10 +184,25 @@ export function TodoDetail({
                 ))}
               </span>
               <label className={cn("flex items-center gap-1.5", isNew && "hidden")}>
-                <input type="checkbox" className="accent-orange-500" checked={form.done} onChange={(e) => setForm({ ...form, done: e.target.checked })} />
+                <input
+                  type="checkbox"
+                  className="accent-orange-500"
+                  checked={form.done}
+                  onChange={async (e) => {
+                    if (!(e.target.checked && !todo.done && onFinish)) return setForm({ ...form, done: e.target.checked });
+                    if (await save(false)) onFinish({ ...todo, title: form.title });
+                  }}
+                />
                 완료
               </label>
             </div>
+
+            {todo.done && todo.done_note && (
+              <div className="text-xs text-white/50">
+                완료 코멘트
+                <p className="mt-1 whitespace-pre-wrap text-sm text-white/80">{todo.done_note}</p>
+              </div>
+            )}
 
             {error && <p className="break-words text-xs text-red-300 light:text-red-700">{error}</p>}
 
@@ -198,6 +220,96 @@ export function TodoDetail({
                 {isNew ? "추가" : "저장"}
               </button>
             </div>
+          </div>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+/** Checking a todo off asks when and how it was finished and what it led to; each 추가 할일 line becomes a new todo. */
+export function FinishTodo({ todo, onClose, onChanged }: { todo: Todo; onClose: () => void; onChanged: () => void }) {
+  const [doneOn, setDoneOn] = useState(() => format(new Date(), "yyyy-MM-dd"));
+  const [note, setNote] = useState("");
+  const [followUps, setFollowUps] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    document.addEventListener("keydown", esc);
+    return () => document.removeEventListener("keydown", esc);
+  }, [onClose]);
+
+  async function finish() {
+    const r = await fetch(`${API}/api/todos/${todo.id}/finish`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ done_on: doneOn, note, follow_ups: followUps.split("\n") }),
+    }).catch(() => null);
+    onChanged();
+    if (r?.ok) return onClose();
+    setError(r ? await r.text() : "로컬 서버에 연결할 수 없습니다.");
+  }
+
+  const input = "mt-1 w-full rounded-sm border border-white/[0.1] bg-white/[0.03] px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500/60";
+  const btn = "rounded-sm px-3 py-1.5 text-sm";
+  return (
+    <div className="absolute inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/60 p-4" onClick={onClose}>
+      <form
+        role="dialog"
+        aria-label="할일 완료"
+        className="flex w-full max-w-md flex-col overflow-hidden rounded-md border border-white/[0.08] bg-background shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={(e) => {
+          e.preventDefault();
+          finish();
+        }}
+      >
+        <div className="flex items-center gap-2 border-b border-white/[0.06] px-4 py-2.5">
+          <h2 className="min-w-0 flex-1 truncate text-sm font-semibold" title={todo.title}>
+            완료 · {todo.title}
+          </h2>
+          <button type="button" className="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white" title="닫기" onClick={onClose}>
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="space-y-3 p-4">
+          <label className="block text-xs text-white/50">
+            완료 날짜
+            <input type="date" required className={input} value={doneOn} onChange={(e) => setDoneOn(e.target.value)} />
+          </label>
+          <label className="block text-xs text-white/50">
+            완료 코멘트
+            <textarea
+              rows={3}
+              autoFocus
+              className={cn(input, "resize-y")}
+              placeholder="어떻게 마무리했는지, 이어서 처리할 일이 생겼다면 그 내용"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+            />
+          </label>
+          <label className="block text-xs text-white/50">
+            추가 할일
+            <textarea
+              rows={3}
+              className={cn(input, "resize-y")}
+              placeholder="한 줄에 하나씩. 적은 줄마다 새 할일이 생깁니다"
+              value={followUps}
+              onChange={(e) => setFollowUps(e.target.value)}
+            />
+          </label>
+
+          {error && <p className="break-words text-xs text-red-300 light:text-red-700">{error}</p>}
+
+          <div className="flex justify-end gap-2 pt-1">
+            <button type="button" className={cn(btn, "border border-white/[0.1] text-white/70 hover:bg-white/10")} onClick={onClose}>
+              취소
+            </button>
+            <button type="submit" className={cn(btn, "bg-orange-500 font-medium text-[#fff] hover:bg-orange-600")}>
+              완료
+            </button>
           </div>
         </div>
       </form>

@@ -60,6 +60,7 @@ pub fn router(dir: PathBuf) -> std::io::Result<Router> {
         .route("/api/calls", post(add_call))
         .route("/api/calls/{id}", axum::routing::delete(delete_call))
         .route("/api/todos/{id}", patch(patch_todo).delete(delete_todo))
+        .route("/api/todos/{id}/finish", post(finish_todo))
         .layer(DefaultBodyLimit::max(30 * 1024 * 1024))
         .layer(cors)
         .with_state(app))
@@ -196,6 +197,13 @@ async fn patch_todo(State(app): State<App>, Path(id): Path<String>, Json(p): Jso
         return Err((StatusCode::BAD_REQUEST, "업무내용은 비울 수 없습니다".into()));
     }
     match app.store.update_todo(&id, p).map_err(internal)? {
+        true => Ok(StatusCode::NO_CONTENT.into_response()),
+        false => Err((StatusCode::NOT_FOUND, "없는 할일".into())),
+    }
+}
+
+async fn finish_todo(State(app): State<App>, Path(id): Path<String>, Json(f): Json<store::Finish>) -> ApiResult {
+    match app.store.finish_todo(&id, f).map_err(internal)? {
         true => Ok(StatusCode::NO_CONTENT.into_response()),
         false => Err((StatusCode::NOT_FOUND, "없는 할일".into())),
     }

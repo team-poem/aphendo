@@ -1,5 +1,5 @@
 use crate::remote::ExtractedTodo;
-use chrono::{DateTime, Days, Months, NaiveDate, Utc};
+use chrono::{DateTime, Days, Local, Months, NaiveDate, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -38,6 +38,9 @@ pub struct Todo {
     /// When the user last checked it off; None while open.
     #[serde(default)]
     pub done_at: Option<DateTime<Utc>>,
+    /// How it went and what it led to, written when checking it off.
+    #[serde(default)]
+    pub done_note: Option<String>,
     /// 0 = unset, 1..=3 stars.
     #[serde(default)]
     pub priority: u8,
@@ -78,6 +81,7 @@ impl Todo {
             detail: clean(item.detail),
             done: false,
             done_at: None,
+            done_note: None,
             priority: 0,
             repeat: None,
             created_at: Utc::now(),
@@ -106,6 +110,17 @@ pub struct TodoPatch {
     pub detail: Option<Option<String>>,
 }
 
+/// Checking a todo off in the completion dialog.
+#[derive(Debug, Deserialize)]
+pub struct Finish {
+    pub done_on: NaiveDate,
+    #[serde(default)]
+    pub note: String,
+    /// One new todo per non-blank line.
+    #[serde(default)]
+    pub follow_ups: Vec<String>,
+}
+
 /// Tells a present `null` apart from an absent key.
 fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
     Option::<T>::deserialize(d).map(Some)
@@ -130,6 +145,23 @@ pub struct CallNote {
     pub who: String,
     pub memo: String,
     pub created_at: DateTime<Utc>,
+}
+
+/// Marks `d.todos[i]` done; a repeating todo adds its next occurrence. No-op when already done.
+fn check_off(d: &mut Data, i: usize, at: DateTime<Utc>) {
+    let t = &mut d.todos[i];
+    if t.done {
+        return;
+    }
+    t.done = true;
+    t.done_at = Some(at);
+    let Some(repeat) = t.repeat else { return };
+    let due = repeat.next(t.due.unwrap_or_else(|| Local::now().date_naive()));
+    let next = Todo { id: new_id(), due: Some(due), done: false, done_at: None, done_note: None, created_at: Utc::now(), ..t.clone() };
+    // Unchecking and checking again must not stack a second copy.
+    if !d.todos.iter().any(|o| !o.done && o.title == next.title && o.due == next.due) {
+        d.todos.push(next);
+    }
 }
 
 fn normalize(title: &str) -> String {
@@ -254,11 +286,11 @@ impl Store {
     /// Returns false when no todo has this id.
     pub fn update_todo(&self, id: &str, p: TodoPatch) -> std::io::Result<bool> {
         self.mutate(|d| {
-            let Some(t) = d.todos.iter_mut().find(|t| t.id == id) else { return false };
-            let checked_off = p.done == Some(true) && !t.done;
-            if let Some(done) = p.done.filter(|&d| d != t.done) {
-                t.done = done;
-                t.done_at = done.then(Utc::now);
+            let Some(i) = d.todos.iter().position(|t| t.id == id) else { return false };
+            let t = &mut d.todos[i];
+            if p.done == Some(false) {
+                t.done = false;
+                t.done_at = None;
             }
             t.priority = p.priority.unwrap_or(t.priority);
             if let Some(repeat) = p.repeat {
@@ -275,13 +307,29 @@ impl Store {
                     *field = clean(v);
                 }
             }
-            if let (true, Some(repeat)) = (checked_off, t.repeat) {
-                let due = repeat.next(t.due.unwrap_or_else(|| chrono::Local::now().date_naive()));
-                let next = Todo { id: new_id(), due: Some(due), done: false, done_at: None, created_at: Utc::now(), ..t.clone() };
-                // Unchecking and checking again must not stack a second copy.
-                if !d.todos.iter().any(|o| !o.done && o.title == next.title && o.due == next.due) {
-                    d.todos.push(next);
-                }
+            if p.done == Some(true) {
+                check_off(d, i, Utc::now());
+            }
+            true
+        })
+    }
+
+    /// Checks a todo off on the day the user names and keeps the note. Each follow-up becomes an open
+    /// todo with the original's capture and contacts but no due date. Returns false when no todo has this id.
+    pub fn finish_todo(&self, id: &str, f: Finish) -> std::io::Result<bool> {
+        // A past day is stamped at local noon so no time zone shift moves it to a neighboring day.
+        let at = match f.done_on == Local::now().date_naive() {
+            true => Utc::now(),
+            false => f.done_on.and_hms_opt(12, 0, 0).unwrap().and_local_timezone(Local).earliest().map_or_else(Utc::now, |t| t.with_timezone(&Utc)),
+        };
+        self.mutate(|d| {
+            let Some(i) = d.todos.iter().position(|t| t.id == id) else { return false };
+            d.todos[i].done_note = clean(Some(f.note));
+            check_off(d, i, at);
+            let src = d.todos[i].clone();
+            for title in f.follow_ups.into_iter().filter_map(|s| clean(Some(s))) {
+                let next = Todo { id: new_id(), title, due: None, detail: None, done: false, done_at: None, done_note: None, priority: 0, repeat: None, created_at: Utc::now(), ..src.clone() };
+                d.todos.push(next);
             }
             true
         })
@@ -394,6 +442,24 @@ mod tests {
         s.update_todo(&open[0].id, off).unwrap();
         s.update_todo(&open[0].id, done()).unwrap();
         assert!(!s.snapshot().todos.iter().any(|x| !x.done && x.title == "월간 보고"), "repeat off stops the chain");
+    }
+
+    #[test]
+    fn finishing_keeps_the_note_and_opens_follow_ups() {
+        let s = Store::open(&tmp()).unwrap();
+        let item = ExtractedTodo { title: "예산 보고".into(), sender: Some("기획처".into()), due: NaiveDate::from_ymd_opt(2026, 11, 5), ..Default::default() };
+        let t = s.add_todo(item, 2, None).unwrap().unwrap();
+        let f: Finish = serde_json::from_str(r#"{"done_on":"2026-11-02","note":" 결재 완료, 증빙 추가 요청 받음 ","follow_ups":["증빙 제출"," ",""]}"#).unwrap();
+        assert!(s.finish_todo(&t.id, f).unwrap());
+        let d = s.snapshot();
+        let done = d.todos.iter().find(|x| x.id == t.id).unwrap();
+        assert!(done.done);
+        assert_eq!(done.done_note.as_deref(), Some("결재 완료, 증빙 추가 요청 받음"));
+        assert_eq!(done.done_at.unwrap().with_timezone(&Local).date_naive(), NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(), "stamped on the chosen day");
+        let open: Vec<_> = d.todos.iter().filter(|x| !x.done).collect();
+        assert_eq!(open.len(), 1, "blank follow-up lines are skipped");
+        assert_eq!((open[0].title.as_str(), open[0].sender.as_deref(), open[0].due, open[0].priority), ("증빙 제출", Some("기획처"), None, 0));
+        assert!(!s.finish_todo("nope", serde_json::from_str(r#"{"done_on":"2026-11-02"}"#).unwrap()).unwrap());
     }
 
     #[test]

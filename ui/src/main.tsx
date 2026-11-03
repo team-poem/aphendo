@@ -7,7 +7,7 @@ import { API } from "./api";
 import { configured, fetchConfig, Settings, type ConfigView } from "./settings";
 import { FullScreenCalendar, type CalendarData } from "@/components/ui/fullscreen-calendar";
 import { cn } from "@/lib/utils";
-import { REPEAT_LABEL, TodoDetail, type Todo } from "./todo-detail";
+import { FinishTodo, REPEAT_LABEL, TodoDetail, type Todo } from "./todo-detail";
 
 type CaptureStatus =
   | { kind: "queued" }
@@ -123,9 +123,12 @@ let refresh: () => void = () => {};
 let openTodo: (id: string) => void = () => {};
 // Reopening moves a todo out of 완료 back to 할 일; follow it there so it doesn't seem to vanish.
 let showReopened: (due: string | null) => void = () => {};
+// Checking off goes through the completion dialog; unchecking reopens right away.
+let finishTodo: (t: Todo) => void = () => {};
 const setDone = (t: Todo, done: boolean) => {
+  if (done) return finishTodo(t);
   patchTodo(t.id, { done });
-  if (!done) showReopened(t.due);
+  showReopened(t.due);
 };
 
 const patchTodo = (id: string, body: { done?: boolean; priority?: number }) =>
@@ -544,6 +547,8 @@ function App() {
   const [editing, setEditing] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   openTodo = setEditing;
+  const [finishing, setFinishing] = useState<Todo | null>(null);
+  finishTodo = setFinishing;
   const [dragging, setDragging] = useState(false);
   const [config, setConfig] = useState<ConfigView | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -627,14 +632,16 @@ function App() {
 
   // Overdue work is still today's work.
   const today = format(startOfToday(), "yyyy-MM-dd");
-  const detail = edited && <TodoDetail key={edited.id} todo={edited} imageUrl={edited.capture_id ? imageUrl(edited.capture_id) : null} onClose={() => setEditing(null)} onChanged={refresh} onReopen={showReopened} />;
+  const detail = edited && <TodoDetail key={edited.id} todo={edited} imageUrl={edited.capture_id ? imageUrl(edited.capture_id) : null} onClose={() => setEditing(null)} onChanged={refresh} onReopen={showReopened} onFinish={setFinishing} />;
   const confirmUpload = staged && <ConfirmUpload images={staged} onClose={() => setStaged(null)} />;
+  const finish = finishing && <FinishTodo key={finishing.id} todo={finishing} onClose={() => setFinishing(null)} onChanged={refresh} />;
   if (compact)
     return (
       <div className="relative h-full">
         <CompactView todos={openTodos.filter((t) => t.due && t.due <= today).sort(byDue)} onExpand={() => compactMode(false)} />
         {detail}
         {confirmUpload}
+        {finish}
       </div>
     );
 
@@ -768,7 +775,7 @@ function App() {
       {view && <CaptureView c={view} todos={state.todos.filter((t) => t.capture_id === view.id)} onClose={() => setViewing(null)} />}
       {adding && (
         <TodoDetail
-          todo={{ id: "", capture_id: "", title: "", due: format(selected, "yyyy-MM-dd"), sender: null, method: null, contact: null, detail: null, done: false, done_at: null, priority: 0, repeat: null, created_at: "" }}
+          todo={{ id: "", capture_id: "", title: "", due: format(selected, "yyyy-MM-dd"), sender: null, method: null, contact: null, detail: null, done: false, done_at: null, done_note: null, priority: 0, repeat: null, created_at: "" }}
           imageUrl={null}
           onClose={() => setAdding(false)}
           onChanged={refresh}
@@ -776,6 +783,7 @@ function App() {
         />
       )}
       {detail}
+      {finish}
       {settingsOpen && <Settings config={config} onClose={() => setSettingsOpen(false)} onSaved={setConfig} />}
       {dragging && (
         <div className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-md border-2 border-dashed border-orange-500/60 bg-orange-500/[0.06] text-sm text-orange-300">
