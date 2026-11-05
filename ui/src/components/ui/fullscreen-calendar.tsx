@@ -21,6 +21,9 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 
+/** Todos listed in a month cell before it collapses the rest into "+N개 더". */
+const MONTH_ROWS = 3;
+
 export interface CalendarEvent {
   id: string | number;
   name: string;
@@ -283,12 +286,12 @@ export function FullScreenCalendar({
                     </time>
                   </button>
                 </header>
-                <div className={cn('flex-1', week ? 'p-1' : 'p-2.5')}>
+                <div className={cn('min-w-0 flex-1', week ? 'p-1' : 'px-1.5 pb-1.5')}>
                   {data
                     .filter(event => isSameDay(event.day, day))
                     .map(d => (
-                      <div key={d.day.toString()} className="space-y-1.5">
-                        {(week ? d.events : d.events.slice(0, 1)).map(event => (
+                      <div key={d.day.toString()} className="space-y-0.5">
+                        {(week ? d.events : d.events.slice(0, MONTH_ROWS)).map(event => (
                           <div
                             key={event.id}
                             onClick={e => {
@@ -296,22 +299,23 @@ export function FullScreenCalendar({
                               setSelectedDay(day);
                               onEventClick?.(event.id);
                             }}
-                            className="flex cursor-pointer flex-col hover:border-orange-500/50 items-start gap-1 rounded-sm border-[0.5px] border-orange-500/20 bg-orange-500/[0.06] p-2 text-xs leading-tight"
+                            className="flex cursor-pointer items-baseline gap-1 rounded-sm px-0.5 text-[11px] leading-4 hover:bg-white/[0.06]"
                           >
-                            <p title={event.name} className={cn('w-full font-medium text-white', week ? 'break-words leading-snug' : 'truncate leading-none', event.done && 'line-through text-white/40')}>
+                            <span className={cn('size-1 shrink-0 -translate-y-px rounded-full bg-orange-400', event.done && 'bg-white/20')} />
+                            <p title={event.name} className={cn('min-w-0 flex-1 text-white/85', week ? 'break-words' : 'truncate', event.done && 'line-through text-white/40')}>
                               {!!event.priority && <span className="mr-0.5 text-amber-400">{'★'.repeat(event.priority)}</span>}
                               {event.name}
                             </p>
                             {event.time && (
-                              <p className="leading-none text-white/40">
+                              <p className="shrink-0 text-white/40">
                                 {event.time}
                               </p>
                             )}
                           </div>
                         ))}
-                        {!week && d.events.length > 1 && (
-                          <div className="text-xs leading-4 text-orange-400/70">
-                            +{d.events.length - 1}개 더
+                        {!week && d.events.length > MONTH_ROWS && (
+                          <div className="px-0.5 text-[11px] leading-4 text-orange-400/70">
+                            +{d.events.length - MONTH_ROWS}개 더
                           </div>
                         )}
                       </div>
