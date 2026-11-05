@@ -116,9 +116,19 @@ pub struct Finish {
     pub done_on: NaiveDate,
     #[serde(default)]
     pub note: String,
-    /// One new todo per non-blank line.
     #[serde(default)]
-    pub follow_ups: Vec<String>,
+    pub follow_ups: Vec<NewTodo>,
+}
+
+/// A todo the user filled in by hand.
+#[derive(Debug, Deserialize)]
+pub struct NewTodo {
+    #[serde(flatten)]
+    pub todo: ExtractedTodo,
+    #[serde(default)]
+    pub priority: u8,
+    #[serde(default)]
+    pub repeat: Option<Repeat>,
 }
 
 /// Tells a present `null` apart from an absent key.
@@ -314,8 +324,8 @@ impl Store {
         })
     }
 
-    /// Checks a todo off on the day the user names and keeps the note. Each follow-up becomes an open
-    /// todo with the original's capture and contacts but no due date. Returns false when no todo has this id.
+    /// Checks a todo off on the day the user names and keeps the note. Each follow-up with a title becomes
+    /// an open todo linked to the original's capture. Returns false when no todo has this id.
     pub fn finish_todo(&self, id: &str, f: Finish) -> std::io::Result<bool> {
         // A past day is stamped at local noon so no time zone shift moves it to a neighboring day.
         let at = match f.done_on == Local::now().date_naive() {
@@ -326,10 +336,10 @@ impl Store {
             let Some(i) = d.todos.iter().position(|t| t.id == id) else { return false };
             d.todos[i].done_note = clean(Some(f.note));
             check_off(d, i, at);
-            let src = d.todos[i].clone();
-            for title in f.follow_ups.into_iter().filter_map(|s| clean(Some(s))) {
-                let next = Todo { id: new_id(), title, due: None, detail: None, done: false, done_at: None, done_note: None, priority: 0, repeat: None, created_at: Utc::now(), ..src.clone() };
-                d.todos.push(next);
+            let capture_id = d.todos[i].capture_id.clone();
+            for n in f.follow_ups {
+                let Some(title) = clean(Some(n.todo.title.clone())) else { continue };
+                d.todos.push(Todo { priority: n.priority, repeat: n.repeat, ..Todo::new(&capture_id, title, n.todo) });
             }
             true
         })
@@ -449,7 +459,7 @@ mod tests {
         let s = Store::open(&tmp()).unwrap();
         let item = ExtractedTodo { title: "예산 보고".into(), sender: Some("기획처".into()), due: NaiveDate::from_ymd_opt(2026, 11, 5), ..Default::default() };
         let t = s.add_todo(item, 2, None).unwrap().unwrap();
-        let f: Finish = serde_json::from_str(r#"{"done_on":"2026-11-02","note":" 결재 완료, 증빙 추가 요청 받음 ","follow_ups":["증빙 제출"," ",""]}"#).unwrap();
+        let f: Finish = serde_json::from_str(r#"{"done_on":"2026-11-02","note":" 결재 완료, 증빙 추가 요청 받음 ","follow_ups":[{"title":"증빙 제출","due":"2026-11-09","sender":"기획처","priority":1},{"title":" "}]}"#).unwrap();
         assert!(s.finish_todo(&t.id, f).unwrap());
         let d = s.snapshot();
         let done = d.todos.iter().find(|x| x.id == t.id).unwrap();
@@ -457,8 +467,9 @@ mod tests {
         assert_eq!(done.done_note.as_deref(), Some("결재 완료, 증빙 추가 요청 받음"));
         assert_eq!(done.done_at.unwrap().with_timezone(&Local).date_naive(), NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(), "stamped on the chosen day");
         let open: Vec<_> = d.todos.iter().filter(|x| !x.done).collect();
-        assert_eq!(open.len(), 1, "blank follow-up lines are skipped");
-        assert_eq!((open[0].title.as_str(), open[0].sender.as_deref(), open[0].due, open[0].priority), ("증빙 제출", Some("기획처"), None, 0));
+        assert_eq!(open.len(), 1, "a follow-up without a title is skipped");
+        assert_eq!((open[0].title.as_str(), open[0].sender.as_deref(), open[0].due, open[0].priority), ("증빙 제출", Some("기획처"), NaiveDate::from_ymd_opt(2026, 11, 9), 1));
+        assert_eq!(open[0].capture_id, t.capture_id);
         assert!(!s.finish_todo("nope", serde_json::from_str(r#"{"done_on":"2026-11-02"}"#).unwrap()).unwrap());
     }
 

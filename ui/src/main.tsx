@@ -634,7 +634,7 @@ function App() {
   const today = format(startOfToday(), "yyyy-MM-dd");
   const detail = edited && <TodoDetail key={edited.id} todo={edited} imageUrl={edited.capture_id ? imageUrl(edited.capture_id) : null} onClose={() => setEditing(null)} onChanged={refresh} onReopen={showReopened} onFinish={setFinishing} />;
   const confirmUpload = staged && <ConfirmUpload images={staged} onClose={() => setStaged(null)} />;
-  const finish = finishing && <FinishTodo key={finishing.id} todo={finishing} onClose={() => setFinishing(null)} onChanged={refresh} />;
+  const finish = finishing && <FinishTodo key={finishing.id} todo={finishing} imageUrl={finishing.capture_id ? imageUrl(finishing.capture_id) : null} onClose={() => setFinishing(null)} onChanged={refresh} />;
   if (compact)
     return (
       <div className="relative h-full">

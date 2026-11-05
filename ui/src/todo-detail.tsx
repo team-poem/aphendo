@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { format } from "date-fns";
-import { X } from "lucide-react";
+import { Plus, X } from "lucide-react";
 import { API } from "./api";
 import { cn } from "@/lib/utils";
 
@@ -41,6 +41,7 @@ export function TodoDetail({
   onChanged,
   onReopen,
   onFinish,
+  onDraft,
 }: {
   todo: Todo;
   imageUrl: string | null;
@@ -49,6 +50,8 @@ export function TodoDetail({
   onReopen: (due: string | null) => void;
   /** Checking 완료 saves the edits and hands over to the completion dialog. */
   onFinish?: (t: Todo) => void;
+  /** Hands the filled-in form back instead of saving it. */
+  onDraft?: (d: TodoDraft) => void;
 }) {
   const [form, setForm] = useState(() => ({ ...todo, due: todo.due ?? "" }));
   const [zoom, setZoom] = useState(false);
@@ -73,22 +76,31 @@ export function TodoDetail({
     return false;
   }
 
-  const save = (withDone = !isNew) =>
-    send({
-      method: isNew ? "POST" : "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        title: form.title,
-        due: form.due || null,
-        sender: form.sender ?? "",
-        method: form.method ?? "",
-        contact: form.contact ?? "",
-        detail: form.detail ?? "",
-        priority: form.priority,
-        repeat: form.repeat,
-        ...(withDone && { done: form.done }),
-      }),
-    });
+  async function save(withDone = !isNew) {
+    const draft: TodoDraft = {
+      title: form.title,
+      due: form.due || null,
+      sender: form.sender ?? "",
+      method: form.method ?? "",
+      contact: form.contact ?? "",
+      detail: form.detail ?? "",
+      priority: form.priority,
+      repeat: form.repeat,
+    };
+    if (!onDraft)
+      return send({
+        method: isNew ? "POST" : "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...draft, ...(withDone && { done: form.done }) }),
+      });
+    if (!draft.title.trim()) {
+      setError("업무내용은 비울 수 없습니다");
+      return false;
+    }
+    onDraft(draft);
+    onClose();
+    return true;
+  }
 
   const input = "mt-1 w-full rounded-sm border border-white/[0.1] bg-white/[0.03] px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500/60";
   const btn = "rounded-sm px-3 py-1.5 text-sm";
@@ -227,24 +239,28 @@ export function TodoDetail({
   );
 }
 
-/** Checking a todo off asks when and how it was finished and what it led to; each 추가 할일 line becomes a new todo. */
-export function FinishTodo({ todo, onClose, onChanged }: { todo: Todo; onClose: () => void; onChanged: () => void }) {
+export type TodoDraft = Pick<Todo, "title" | "due" | "priority" | "repeat"> & { sender: string; method: string; contact: string; detail: string };
+
+/** Checking a todo off asks when and how it was finished and what it led to. The 추가 할일 drafts are created only on 완료. */
+export function FinishTodo({ todo, imageUrl, onClose, onChanged }: { todo: Todo; imageUrl: string | null; onClose: () => void; onChanged: () => void }) {
   const [doneOn, setDoneOn] = useState(() => format(new Date(), "yyyy-MM-dd"));
   const [note, setNote] = useState("");
-  const [followUps, setFollowUps] = useState("");
+  const [followUps, setFollowUps] = useState<TodoDraft[]>([]);
+  const [drafting, setDrafting] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
+    if (drafting) return;
     const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     document.addEventListener("keydown", esc);
     return () => document.removeEventListener("keydown", esc);
-  }, [onClose]);
+  }, [onClose, drafting]);
 
   async function finish() {
     const r = await fetch(`${API}/api/todos/${todo.id}/finish`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ done_on: doneOn, note, follow_ups: followUps.split("\n") }),
+      body: JSON.stringify({ done_on: doneOn, note, follow_ups: followUps }),
     }).catch(() => null);
     onChanged();
     if (r?.ok) return onClose();
@@ -254,6 +270,7 @@ export function FinishTodo({ todo, onClose, onChanged }: { todo: Todo; onClose: 
   const input = "mt-1 w-full rounded-sm border border-white/[0.1] bg-white/[0.03] px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500/60";
   const btn = "rounded-sm px-3 py-1.5 text-sm";
   return (
+    <>
     <div className="absolute inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/60 p-4" onClick={onClose}>
       <form
         role="dialog"
@@ -290,16 +307,22 @@ export function FinishTodo({ todo, onClose, onChanged }: { todo: Todo; onClose: 
               onChange={(e) => setNote(e.target.value)}
             />
           </label>
-          <label className="block text-xs text-white/50">
+          <div className="text-xs text-white/50">
             추가 할일
-            <textarea
-              rows={3}
-              className={cn(input, "resize-y")}
-              placeholder="한 줄에 하나씩. 적은 줄마다 새 할일이 생깁니다"
-              value={followUps}
-              onChange={(e) => setFollowUps(e.target.value)}
-            />
-          </label>
+            {followUps.map((d, i) => (
+              <div key={i} className="mt-1 flex items-center gap-2 rounded-sm border border-white/[0.1] bg-white/[0.03] px-2 py-1.5 text-sm text-white">
+                <span className="min-w-0 flex-1 truncate">{d.title}</span>
+                {d.due && <span className="text-xs text-white/50">{d.due}</span>}
+                <button type="button" className="rounded p-0.5 text-white/50 hover:bg-white/10 hover:text-white" title="빼기" onClick={() => setFollowUps(followUps.filter((_, j) => j !== i))}>
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+            <button type="button" className="mt-1 flex w-full items-center justify-center gap-1 rounded-sm border border-dashed border-white/[0.15] py-1.5 text-sm text-white/70 hover:bg-white/10" onClick={() => setDrafting(true)}>
+              <Plus size={14} />
+              추가 할일
+            </button>
+          </div>
 
           {error && <p className="break-words text-xs text-red-300 light:text-red-700">{error}</p>}
 
@@ -314,5 +337,16 @@ export function FinishTodo({ todo, onClose, onChanged }: { todo: Todo; onClose: 
         </div>
       </form>
     </div>
+    {drafting && (
+      <TodoDetail
+        todo={{ ...todo, id: "", title: "", due: doneOn, detail: null, done: false, done_at: null, done_note: null, priority: 0, repeat: null }}
+        imageUrl={imageUrl}
+        onClose={() => setDrafting(false)}
+        onChanged={() => {}}
+        onReopen={() => {}}
+        onDraft={(d) => setFollowUps([...followUps, d])}
+      />
+    )}
+    </>
   );
 }

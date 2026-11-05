@@ -169,17 +169,7 @@ async fn test_config(State(app): State<App>, body: Option<Json<ConfigTest>>) -> 
     Ok(Json(remote::probe(&cfg).await).into_response())
 }
 
-#[derive(Deserialize)]
-struct NewTodo {
-    #[serde(flatten)]
-    todo: remote::ExtractedTodo,
-    #[serde(default)]
-    priority: u8,
-    #[serde(default)]
-    repeat: Option<store::Repeat>,
-}
-
-async fn add_todo(State(app): State<App>, Json(p): Json<NewTodo>) -> ApiResult {
+async fn add_todo(State(app): State<App>, Json(p): Json<store::NewTodo>) -> ApiResult {
     if p.priority > 3 {
         return Err((StatusCode::BAD_REQUEST, "중요도는 0~3".into()));
     }
@@ -203,6 +193,9 @@ async fn patch_todo(State(app): State<App>, Path(id): Path<String>, Json(p): Jso
 }
 
 async fn finish_todo(State(app): State<App>, Path(id): Path<String>, Json(f): Json<store::Finish>) -> ApiResult {
+    if f.follow_ups.iter().any(|n| n.priority > 3) {
+        return Err((StatusCode::BAD_REQUEST, "중요도는 0~3".into()));
+    }
     match app.store.finish_todo(&id, f).map_err(internal)? {
         true => Ok(StatusCode::NO_CONTENT.into_response()),
         false => Err((StatusCode::NOT_FOUND, "없는 할일".into())),
