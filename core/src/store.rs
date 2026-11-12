@@ -1,4 +1,4 @@
-use crate::remote::ExtractedTodo;
+use crate::remote::{ExtractedTodo, ReportItem};
 use chrono::{DateTime, Days, Local, Months, NaiveDate, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::path::{Path, PathBuf};
@@ -56,6 +56,9 @@ pub struct Todo {
     /// Captures linked later as more evidence for the same work; `capture_id` stays the first one.
     #[serde(default)]
     pub extra_captures: Vec<String>,
+    /// The todo whose completion added this one as a follow-up. Follow-ups made before this field have none.
+    #[serde(default)]
+    pub parent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -94,6 +97,7 @@ impl Todo {
             repeat: None,
             created_at: Utc::now(),
             extra_captures: Vec::new(),
+            parent_id: None,
         }
     }
 }
@@ -157,6 +161,20 @@ pub struct Data {
     pub calls: Vec<CallNote>,
     #[serde(default)]
     pub pending: Vec<Pending>,
+    #[serde(default)]
+    pub reports: Vec<Report>,
+}
+
+/// A weekly work log: the sentences of its 실시항목 and 예정항목 boxes as the user left them.
+/// `start..=end` is the 실시 period and identifies the report; 예정 has its own period.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Report {
+    pub start: NaiveDate,
+    pub end: NaiveDate,
+    pub planned_start: NaiveDate,
+    pub planned_end: NaiveDate,
+    pub done: Vec<String>,
+    pub planned: Vec<String>,
 }
 
 /// A new todo held back because it looks like one already listed. Nothing is merged or dropped
@@ -210,7 +228,7 @@ fn check_off(d: &mut Data, i: usize, at: DateTime<Utc>) {
     t.done_at = Some(at);
     let Some(repeat) = t.repeat else { return };
     let due = repeat.next(t.due.unwrap_or_else(|| Local::now().date_naive()));
-    let next = Todo { id: new_id(), due: Some(due), done: false, done_at: None, done_note: None, created_at: Utc::now(), ..t.clone() };
+    let next = Todo { id: new_id(), due: Some(due), done: false, done_at: None, done_note: None, created_at: Utc::now(), parent_id: None, ..t.clone() };
     // Unchecking and checking again must not stack a second copy.
     if !d.todos.iter().any(|o| !o.done && o.title == next.title && o.due == next.due) {
         d.todos.push(next);
@@ -472,7 +490,7 @@ impl Store {
             let capture_id = d.todos[i].capture_id.clone();
             for n in f.follow_ups {
                 let Some(title) = clean(Some(n.todo.title.clone())) else { continue };
-                d.todos.push(Todo { priority: n.priority, repeat: n.repeat, ..Todo::new(&capture_id, title, n.todo) });
+                d.todos.push(Todo { priority: n.priority, repeat: n.repeat, parent_id: Some(id.to_string()), ..Todo::new(&capture_id, title, n.todo) });
             }
             true
         })
@@ -483,6 +501,29 @@ impl Store {
             let before = d.todos.len();
             d.todos.retain(|t| t.id != id);
             d.todos.len() != before
+        })
+    }
+
+    /// What a report is written from: todos checked off in the 실시 period `start..=end` (with their
+    /// completion note), and open todos due by the end of the 예정 period, overdue ones included.
+    pub fn report_items(&self, start: NaiveDate, end: NaiveDate, planned_end: NaiveDate) -> (Vec<ReportItem>, Vec<ReportItem>) {
+        let d = self.data.lock().unwrap();
+        let item = |t: &Todo, note: Option<&String>| ReportItem { title: t.title.clone(), note: note.cloned(), due: t.due };
+        let mut done: Vec<&Todo> = d.todos.iter().filter(|t| t.done_at.is_some_and(|at| (start..=end).contains(&at.with_timezone(&Local).date_naive()))).collect();
+        done.sort_by_key(|t| t.done_at);
+        let mut planned: Vec<&Todo> = d.todos.iter().filter(|t| !t.done && t.due.is_some_and(|due| due <= planned_end)).collect();
+        planned.sort_by_key(|t| (t.due, std::cmp::Reverse(t.priority)));
+        (
+            done.into_iter().map(|t| item(t, t.done_note.as_ref().or(t.detail.as_ref()))).collect(),
+            planned.into_iter().map(|t| item(t, t.detail.as_ref())).collect(),
+        )
+    }
+
+    /// Keeps one report per period; saving the same period again replaces it.
+    pub fn save_report(&self, r: Report) -> std::io::Result<()> {
+        self.mutate(|d| {
+            d.reports.retain(|o| (o.start, o.end) != (r.start, r.end));
+            d.reports.push(r);
         })
     }
 
@@ -612,6 +653,7 @@ mod tests {
         assert_eq!(open.len(), 1, "a follow-up without a title is skipped");
         assert_eq!((open[0].title.as_str(), open[0].sender.as_deref(), open[0].due, open[0].priority), ("증빙 제출", Some("기획처"), NaiveDate::from_ymd_opt(2026, 11, 9), 1));
         assert_eq!(open[0].capture_id, t.capture_id);
+        assert_eq!(open[0].parent_id.as_deref(), Some(t.id.as_str()), "a follow-up remembers what it followed");
         assert!(!s.finish_todo("nope", serde_json::from_str(r#"{"done_on":"2026-11-02"}"#).unwrap()).unwrap());
     }
 
@@ -669,6 +711,37 @@ mod tests {
         let d = Store::open(&dir).unwrap().snapshot();
         assert_eq!(d.captures[0].status, CaptureStatus::Done { added: 1, held: 0 });
         assert!(d.todos[0].extra_captures.is_empty() && d.pending.is_empty() && d.calls.is_empty());
+    }
+
+    #[test]
+    fn report_items_cover_the_done_span_and_up_to_the_planned_end() {
+        let s = Store::open(&tmp()).unwrap();
+        let add = |title: &str, d| added(s.add_todo(ExtractedTodo { title: title.into(), due: d, ..Default::default() }, 0, None).unwrap());
+        let finished = add("예산 보고", due(11, 10));
+        let f: Finish = serde_json::from_str(r#"{"done_on":"2026-11-11","note":"결재 완료"}"#).unwrap();
+        s.finish_todo(&finished.id, f).unwrap();
+        add("교육 이수", due(11, 20));
+        add("지난 서류", due(11, 3));
+        add("다음 달 행사", due(12, 15));
+        add("마감 없는 일", None);
+        let (done, planned) = s.report_items(due(11, 9).unwrap(), due(11, 13).unwrap(), due(11, 20).unwrap());
+        assert_eq!(done, vec![ReportItem { title: "예산 보고".into(), note: Some("결재 완료".into()), due: due(11, 10) }]);
+        assert_eq!(planned.iter().map(|i| i.title.as_str()).collect::<Vec<_>>(), ["지난 서류", "교육 이수"], "overdue and up to the planned end; not next month, not undated");
+        let (done, _) = s.report_items(due(11, 16).unwrap(), due(11, 20).unwrap(), due(11, 27).unwrap());
+        assert!(done.is_empty(), "finished outside the span");
+    }
+
+    #[test]
+    fn saving_a_report_replaces_the_same_period() {
+        let dir = tmp();
+        let s = Store::open(&dir).unwrap();
+        let r = |line: &str| Report { start: due(11, 9).unwrap(), end: due(11, 13).unwrap(), planned_start: due(11, 16).unwrap(), planned_end: due(11, 20).unwrap(), done: vec![line.into()], planned: vec![] };
+        s.save_report(r("초안")).unwrap();
+        s.save_report(r("고친 문장")).unwrap();
+        s.save_report(Report { start: due(11, 16).unwrap(), end: due(11, 20).unwrap(), ..r("다음 주") }).unwrap();
+        let d = Store::open(&dir).unwrap().snapshot();
+        assert_eq!(d.reports.len(), 2);
+        assert_eq!(d.reports[0].done, vec!["고친 문장".to_string()]);
     }
 
     #[test]

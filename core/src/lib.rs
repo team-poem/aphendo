@@ -62,6 +62,9 @@ pub fn router(dir: PathBuf) -> std::io::Result<Router> {
         .route("/api/todos/{id}", patch(patch_todo).delete(delete_todo))
         .route("/api/todos/{id}/finish", post(finish_todo))
         .route("/api/pending/{id}/resolve", post(resolve_pending))
+        .route("/api/reports", axum::routing::put(save_report))
+        .route("/api/reports/sources", post(report_sources))
+        .route("/api/reports/draft", post(draft_report))
         .layer(DefaultBodyLimit::max(30 * 1024 * 1024))
         .layer(cors)
         .with_state(app))
@@ -210,6 +213,48 @@ async fn finish_todo(State(app): State<App>, Path(id): Path<String>, Json(f): Js
         true => Ok(StatusCode::NO_CONTENT.into_response()),
         false => Err((StatusCode::NOT_FOUND, "없는 할일".into())),
     }
+}
+
+/// The 실시 period and the 예정 period of a weekly report.
+#[derive(Deserialize)]
+struct Periods {
+    start: chrono::NaiveDate,
+    end: chrono::NaiveDate,
+    planned_start: chrono::NaiveDate,
+    planned_end: chrono::NaiveDate,
+}
+
+fn checked(p: Periods) -> Result<Periods, (StatusCode, String)> {
+    match p.end < p.start || p.planned_end < p.planned_start {
+        true => Err((StatusCode::BAD_REQUEST, "끝 날짜가 시작 날짜보다 앞입니다".into())),
+        false => Ok(p),
+    }
+}
+
+async fn report_sources(State(app): State<App>, Json(p): Json<Periods>) -> ApiResult {
+    let p = checked(p)?;
+    let (done, planned) = app.store.report_items(p.start, p.end, p.planned_end);
+    Ok(Json(serde_json::json!({ "done": done, "planned": planned })).into_response())
+}
+
+/// Sentences for both boxes from the periods' todos. Nothing is saved; the page saves what the user keeps.
+async fn draft_report(State(app): State<App>, Json(p): Json<Periods>) -> ApiResult {
+    let p = checked(p)?;
+    let (done, planned) = app.store.report_items(p.start, p.end, p.planned_end);
+    if done.is_empty() && planned.is_empty() {
+        return Ok(Json(remote::ReportDraft::default()).into_response());
+    }
+    let cfg = remote::Config::load(&app.dir).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let draft = remote::draft_report(&cfg, (p.start, p.end), (p.planned_start, p.planned_end), &done, &planned)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
+    Ok(Json(draft).into_response())
+}
+
+async fn save_report(State(app): State<App>, Json(r): Json<store::Report>) -> ApiResult {
+    checked(Periods { start: r.start, end: r.end, planned_start: r.planned_start, planned_end: r.planned_end })?;
+    app.store.save_report(r).map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 #[derive(Deserialize)]

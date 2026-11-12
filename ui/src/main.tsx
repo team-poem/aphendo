@@ -2,7 +2,7 @@ import { StrictMode, useEffect, useMemo, useRef, useState, type MouseEvent, type
 import { createRoot } from "react-dom/client";
 import { addMonths, addWeeks, endOfDay, endOfMonth, endOfWeek, format, isSameMonth, isToday, isWithinInterval, startOfDay, startOfMonth, startOfToday, startOfWeek } from "date-fns";
 import { ko } from "date-fns/locale";
-import { AlertTriangle, Camera, ChevronLeft, ChevronRight, Copy, Images, List, Maximize2, Menu, Minus, Plus, Settings as Gear, Shrink, X } from "lucide-react";
+import { AlertTriangle, BarChart3, Camera, ChevronLeft, ChevronRight, Copy, Home, Images, List, Maximize2, Menu, Minus, NotebookPen, Plus, Settings as Gear, Shrink, X } from "lucide-react";
 import { API, imageUrl, type Capture } from "./api";
 import { configured, fetchConfig, Settings, type ConfigView } from "./settings";
 import { MiniCalendar, MonthGrid, WeekBoard, workWeek } from "./calendar";
@@ -11,11 +11,14 @@ import { EvidenceCard } from "./evidence";
 import { useLayer } from "./layer";
 import { applyColors, colorsOf, readTheme } from "./theme";
 import { actions, byOrder, dueDate, evidenceOf, isOverdue, TodoRow } from "./todo-item";
+import { WeeklyReport, type Report } from "./weekly";
+import { FollowUpTimeline } from "./timeline";
 import { cn } from "@/lib/utils";
 import { FinishTodo, TodoDetail, type Todo } from "./todo-detail";
 
 type CallNote = { id: string; who: string; memo: string; created_at: string };
-type State = { captures: Capture[]; todos: Todo[]; calls?: CallNote[]; pending?: Pending[] };
+type State = { captures: Capture[]; todos: Todo[]; calls?: CallNote[]; pending?: Pending[]; reports?: Report[] };
+type Page = "home" | "stats" | "weekly";
 
 declare global {
   interface Window {
@@ -626,13 +629,14 @@ function ListDrawer({
   );
 }
 
-/** Narrow windows: the side panel as an overlay, closed by Esc or a tap outside. */
+/** Narrow windows: the side panel as an overlay, closed by Esc or a tap outside. Too short to pin the
+ *  calendar and buttons, so here the whole panel scrolls. */
 function SideOverlay({ onClose, children }: { onClose: () => void; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayer(onClose, ref);
   return (
     <div className="absolute inset-0 z-30 bg-black/50 lg:hidden" onClick={onClose}>
-      <div ref={ref} tabIndex={-1} className="side-panel flex h-full w-[min(300px,85%)] flex-col shadow-2xl outline-none" onClick={(e) => e.stopPropagation()}>
+      <div ref={ref} tabIndex={-1} className="side-panel h-full w-[min(300px,85%)] overflow-y-auto shadow-2xl outline-none" onClick={(e) => e.stopPropagation()}>
         {children}
       </div>
     </div>
@@ -647,6 +651,7 @@ function App() {
   // The day the main view is built around; month view shows its month, week view its Monday–Friday.
   const [cursor, setCursor] = useState(startOfToday);
   const [selected, setSelected] = useState(startOfToday);
+  const [page, setPage] = useState<Page>("home");
   const [sideOpen, setSideOpen] = useState(false);
   const [drawer, setDrawer] = useState(false);
   const [tab, setTab] = useState<Tab>(() => readTabOrder()[0]);
@@ -801,6 +806,7 @@ function App() {
     setSelected(startOfToday());
   };
   const pickDay = (d: Date) => {
+    setPage("home");
     setCursor(d);
     setSelected(d);
     setSideOpen(false);
@@ -850,6 +856,39 @@ function App() {
       </div>
     );
 
+  const menu = (rail: boolean) => (
+    <nav aria-label="메뉴" className={rail ? "flex w-16 shrink-0 flex-col items-stretch gap-1 border-r border-white/[0.08] bg-side px-1.5 py-2" : "shrink-0 space-y-0.5 border-b border-white/[0.08] p-2"}>
+      {(
+        [
+          ["홈", Home, page === "home", () => setPage("home")],
+          ["목록", List, drawer, () => setDrawer(!drawer)],
+          ["통계", BarChart3, page === "stats", () => setPage("stats")],
+          ["주간업무", NotebookPen, page === "weekly", () => setPage("weekly")],
+          ["환경설정", Gear, settingsOpen, () => setSettingsOpen(true)],
+        ] as const
+      ).map(([label, Icon, active, go]) => (
+        <button
+          key={label}
+          type="button"
+          aria-current={active && label !== "목록" && label !== "환경설정" ? "page" : undefined}
+          aria-pressed={label === "목록" ? drawer : undefined}
+          onClick={() => {
+            go();
+            setSideOpen(false);
+          }}
+          className={cn(
+            "flex rounded-md",
+            rail ? "flex-col items-center gap-1 py-2 text-[11px] leading-none" : "h-8 w-full items-center gap-2.5 px-2.5 text-sm",
+            active ? "bg-orange-500/15 font-semibold text-orange-300 light:text-orange-700" : "text-white/70 hover:bg-white/[0.06] hover:text-white",
+          )}
+        >
+          <Icon size={rail ? 18 : 16} aria-hidden />
+          {label}
+        </button>
+      ))}
+    </nav>
+  );
+
   const side = (
     <>
       <div className="shrink-0 pb-3">
@@ -857,17 +896,6 @@ function App() {
       </div>
       {/* Only the lists scroll; the calendar above and the buttons below stay put. */}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <Section title={`오늘 할 일 · ${format(startOfToday(), "M/d (EEE)", { locale: ko })}`} count={todayTodos.filter((t) => !t.done).length}>
-          {todayTodos.length ? (
-            <ul className="mt-1">
-              {todayTodos.map((t) => (
-                <TodoRow key={t.id} t={t} />
-              ))}
-            </ul>
-          ) : (
-            <p className="px-1.5 pt-1 text-sm text-white/45">오늘 마감인 할일이 없습니다.</p>
-          )}
-        </Section>
         <Section title="기한 초과" count={overdue.length} tone="warn">
           {overdue.length ? (
             <ul className="mt-1">
@@ -877,6 +905,17 @@ function App() {
             </ul>
           ) : (
             <p className="px-1.5 pt-1 text-sm text-white/45">기한이 지난 할일이 없습니다.</p>
+          )}
+        </Section>
+        <Section title={`오늘 할 일 · ${format(startOfToday(), "M/d (EEE)", { locale: ko })}`} count={todayTodos.filter((t) => !t.done).length}>
+          {todayTodos.length ? (
+            <ul className="mt-1">
+              {todayTodos.map((t) => (
+                <TodoRow key={t.id} t={t} />
+              ))}
+            </ul>
+          ) : (
+            <p className="px-1.5 pt-1 text-sm text-white/45">오늘 마감인 할일이 없습니다.</p>
           )}
         </Section>
       </div>
@@ -901,7 +940,7 @@ function App() {
   return (
     <div className="relative flex h-full flex-col">
       <header onMouseDown={dragWindow} className="flex shrink-0 select-none flex-wrap items-center gap-2 border-b border-white/[0.08] px-3 py-2">
-        <button className={cn(iconBtn, "lg:hidden")} title="달력·오늘 할 일 열기" aria-label="왼쪽 영역 열기" onClick={() => setSideOpen(true)}>
+        <button className={cn(iconBtn, page === "home" ? "lg:hidden" : "md:hidden")} title="메뉴·달력·오늘 할 일 열기" aria-label="왼쪽 영역 열기" onClick={() => setSideOpen(true)}>
           <Menu size={18} />
         </button>
         <h1 className="mr-1 text-sm font-semibold">
@@ -909,6 +948,8 @@ function App() {
           <AppVersion />
           {open.length > 0 && <span className="ml-1.5 rounded-full bg-orange-500 px-1.5 text-xs text-[#fff]">{open.length}</span>}
         </h1>
+        {page === "home" ? (
+        <>
         <div className="flex items-center">
           <button className={iconBtn} aria-label={view === "month" ? "이전 달" : "이전 주"} title={view === "month" ? "이전 달" : "이전 주"} onClick={() => step(-1)}>
             <ChevronLeft size={18} />
@@ -936,6 +977,10 @@ function App() {
             </button>
           ))}
         </div>
+        </>
+        ) : (
+          <h2 className="text-base font-semibold">{page === "stats" ? "통계" : "주간업무"}</h2>
+        )}
         <span className="flex-1" />
         {tauri && (
           <button className={cn(toolBtn, "border-orange-500/50 bg-orange-500 font-medium text-[#fff] hover:bg-orange-600 hover:text-[#fff]")} title="화면 캡처 (Alt+Shift+S)" onClick={() => tauri.core.invoke("start_snip").catch((e) => setMsgState(`화면 캡처 실패: ${e}`))}>
@@ -952,10 +997,6 @@ function App() {
           <span className="max-sm:sr-only">캡처 목록</span>
           <span className="tabular-nums text-white/50">{state.captures.length}</span>
         </button>
-        <button className={toolBtn} title="할 일 · 완료 · 통화 메모 목록" onClick={() => setDrawer(!drawer)} aria-pressed={drawer}>
-          <List size={15} />
-          <span className="max-sm:sr-only">목록</span>
-        </button>
         {pending.length > 0 && (
           <button className={cn(toolBtn, "border-orange-500/60 text-orange-300 light:text-orange-700")} title="이미 있는 업무와 비슷해서 보류한 업무" onClick={() => setReviewOpen(true)}>
             <Copy size={15} />
@@ -963,9 +1004,6 @@ function App() {
           </button>
         )}
         <UpdateButton />
-        <button className={iconBtn} title="설정 · 테마" aria-label="설정" onClick={() => setSettingsOpen(true)}>
-          <Gear size={17} />
-        </button>
         <button className={iconBtn} title="오늘 할일만 작게 보기" aria-label="작게 보기" onClick={() => compactMode(true)}>
           <Shrink size={17} />
         </button>
@@ -987,12 +1025,32 @@ function App() {
       )}
 
       <div className="relative flex min-h-0 flex-1">
-        <aside className="side-panel hidden w-[280px] shrink-0 flex-col border-r border-white/[0.08] lg:flex">{side}</aside>
-        <main className="min-w-0 flex-1 overflow-y-auto">{view === "month" ? <MonthGrid month={cursor} byDay={byDay} selected={selected} onDay={showDay} /> : <WeekBoard anchor={cursor} byDay={byDay} onDay={showDay} />}</main>
+        <div className="side-panel hidden md:flex">{menu(true)}</div>
+        {page === "home" && <aside className="side-panel hidden w-[280px] shrink-0 flex-col border-r border-white/[0.08] lg:flex">{side}</aside>}
+        <main className="min-w-0 flex-1 overflow-y-auto">
+          {page === "weekly" ? (
+            <WeeklyReport reports={state.reports} />
+          ) : page === "stats" ? (
+            <div className="mx-auto max-w-3xl space-y-8 p-6">
+              <h1 className="text-xl font-semibold">통계</h1>
+              <FollowUpTimeline todos={state.todos} />
+              <p className="rounded-lg border border-dashed border-white/[0.15] p-6 text-sm text-white/55">그래프는 준비 중입니다. 완료 추이, 분류별 할일, 기한 준수율 같은 그래프가 들어올 자리입니다.</p>
+            </div>
+          ) : view === "month" ? (
+            <MonthGrid month={cursor} byDay={byDay} selected={selected} onDay={showDay} />
+          ) : (
+            <WeekBoard anchor={cursor} byDay={byDay} onDay={showDay} />
+          )}
+        </main>
         {drawer && <ListDrawer state={state} tab={tab} setTab={setTab} scope={scope} setScope={setScope} selected={selected} inSpan={inSpan} onClose={() => setDrawer(false)} />}
       </div>
 
-      {sideOpen && <SideOverlay onClose={() => setSideOpen(false)}>{side}</SideOverlay>}
+      {sideOpen && (
+        <SideOverlay onClose={() => setSideOpen(false)}>
+          <div className="md:hidden">{menu(false)}</div>
+          {page === "home" && side}
+        </SideOverlay>
+      )}
       {capturesOpen && <CaptureList captures={state.captures} onView={setViewing} onClose={() => setCapturesOpen(false)} />}
       {view_ && <CaptureView c={view_} todos={state.todos.filter((t) => evidenceOf(t).includes(view_.id))} onClose={() => setViewing(null)} />}
       {dayOpen && (

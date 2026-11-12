@@ -22,6 +22,8 @@ export type Todo = {
   created_at: string;
   /** Captures linked later as more evidence. Missing from servers before this field. */
   extra_captures?: string[];
+  /** The todo whose completion added this one as a follow-up. */
+  parent_id?: string | null;
 };
 export type Repeat = "weekly" | "monthly";
 export const REPEAT_LABEL: Record<Repeat, string> = { weekly: "매주", monthly: "매월" };

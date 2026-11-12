@@ -126,24 +126,44 @@ struct Payload {
 }
 
 /// structuredContent first, then any text block holding the same JSON.
-pub fn parse_result(r: CallToolResult) -> Result<Vec<ExtractedTodo>, String> {
+fn parse_payload<T: serde::de::DeserializeOwned>(r: CallToolResult, what: &str) -> Result<T, String> {
     let texts: Vec<&str> = r.content.iter().filter_map(|c| c.as_text()).map(|t| t.text.as_str()).collect();
     if r.is_error == Some(true) {
         return Err(format!("서버 오류: {}", texts.join(" ")));
     }
     if let Some(v) = r.structured_content {
-        return serde_json::from_value::<Payload>(v)
-            .map(|p| p.todos)
-            .map_err(|e| format!("응답 형식 오류: {e}"));
+        return serde_json::from_value::<T>(v).map_err(|e| format!("응답 형식 오류: {e}"));
     }
-    let mut last_err = "응답에 todos 없음".to_string();
+    let mut last_err = format!("응답에 {what} 없음");
     for t in texts {
-        match serde_json::from_str::<Payload>(t) {
-            Ok(p) => return Ok(p.todos),
+        match serde_json::from_str::<T>(t) {
+            Ok(p) => return Ok(p),
             Err(e) => last_err = format!("응답 형식 오류: {e}"),
         }
     }
     Err(last_err)
+}
+
+pub fn parse_result(r: CallToolResult) -> Result<Vec<ExtractedTodo>, String> {
+    parse_payload::<Payload>(r, "todos").map(|p| p.todos)
+}
+
+// ponytail: one MCP session per call; pool a client if calls get frequent.
+async fn call_tool(cfg: &Config, tool: &'static str, args: serde_json::Value) -> Result<CallToolResult, String> {
+    let transport = cfg.transport()?;
+    let call = async {
+        let client = ()
+            .serve(transport)
+            .await
+            .map_err(|e| format!("MCP 연결 실패: {}", redact(e)))?;
+        let params = CallToolRequestParams::new(tool).with_arguments(args.as_object().cloned().unwrap_or_default());
+        let result = client.call_tool(params).await.map_err(|e| format!("MCP 호출 실패: {}", redact(e)));
+        let _ = client.cancel().await;
+        result
+    };
+    tokio::time::timeout(TIMEOUT, call)
+        .await
+        .map_err(|_| format!("시간 초과 ({}초)", TIMEOUT.as_secs()))?
 }
 
 pub async fn extract_todos(
@@ -153,28 +173,39 @@ pub async fn extract_todos(
     today: NaiveDate,
 ) -> Result<Vec<ExtractedTodo>, String> {
     use base64::Engine;
-    let transport = cfg.transport()?;
     let args = serde_json::json!({
         "image_base64": base64::engine::general_purpose::STANDARD.encode(image),
         "mime_type": mime_type,
         "today": today.format("%Y-%m-%d").to_string(),
     });
-    let call = async {
-        // ponytail: one MCP session per capture; pool a client if captures get frequent.
-        let client = ()
-            .serve(transport)
-            .await
-            .map_err(|e| format!("MCP 연결 실패: {}", redact(e)))?;
-        let params = CallToolRequestParams::new("extract_todos")
-            .with_arguments(args.as_object().cloned().unwrap_or_default());
-        let result = client.call_tool(params).await.map_err(|e| format!("MCP 호출 실패: {}", redact(e)));
-        let _ = client.cancel().await;
-        result
-    };
-    let result = tokio::time::timeout(TIMEOUT, call)
-        .await
-        .map_err(|_| format!("시간 초과 ({}초)", TIMEOUT.as_secs()))??;
-    parse_result(result)
+    parse_result(call_tool(cfg, "extract_todos", args).await?)
+}
+
+/// One todo the weekly report is written from.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReportItem {
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub due: Option<NaiveDate>,
+}
+
+/// One sentence per line of the 실시항목 and 예정항목 boxes.
+#[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ReportDraft {
+    pub done: Vec<String>,
+    pub planned: Vec<String>,
+}
+
+/// `done_span` is the 실시 period, `planned_span` the 예정 period.
+pub async fn draft_report(cfg: &Config, done_span: (NaiveDate, NaiveDate), planned_span: (NaiveDate, NaiveDate), done: &[ReportItem], planned: &[ReportItem]) -> Result<ReportDraft, String> {
+    let args = serde_json::json!({
+        "start": done_span.0, "end": done_span.1,
+        "planned_start": planned_span.0, "planned_end": planned_span.1,
+        "done": done, "planned": planned,
+    });
+    parse_payload(call_tool(cfg, "draft_weekly_report", args).await?, "done/planned")
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 //! Stand-in for the remote codex MCP server: `cargo run -p core --example fake_mcp`.
-//! Serves `extract_todos` on http://127.0.0.1:8787/mcp, requires `Bearer devtoken`,
-//! waits FAKE_DELAY seconds (default 3), and returns fixed todos dated off `today`.
+//! Serves `extract_todos` and `draft_weekly_report` on http://127.0.0.1:8787/mcp, requires
+//! `Bearer devtoken`, waits FAKE_DELAY seconds (default 3), and returns fixed todos dated off
+//! `today`, or each report item's title turned into a sentence.
 use axum::{extract::Request, http::StatusCode, middleware::Next, response::Response};
 use chrono::{Duration, NaiveDate};
 use rmcp::handler::server::wrapper::Parameters;
@@ -18,8 +19,27 @@ struct Args {
     today: String,
 }
 
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct Item {
+    title: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ReportArgs {
+    done: Vec<Item>,
+    planned: Vec<Item>,
+}
+
 #[tool_router(server_handler)]
 impl Fake {
+    #[tool(description = "Draft weekly report sentences.")]
+    async fn draft_weekly_report(&self, Parameters(a): Parameters<ReportArgs>) -> Result<CallToolResult, String> {
+        let delay = std::env::var("FAKE_DELAY").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
+        tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+        let lines = |items: Vec<Item>, end: &str| items.into_iter().map(|i| format!("{} {end}", i.title)).collect::<Vec<_>>();
+        Ok(CallToolResult::structured(serde_json::json!({ "done": lines(a.done, "완료"), "planned": lines(a.planned, "예정") })))
+    }
+
     #[tool(description = "Extract todos from a screenshot.")]
     async fn extract_todos(&self, Parameters(a): Parameters<Args>) -> Result<CallToolResult, String> {
         let today = NaiveDate::parse_from_str(&a.today, "%Y-%m-%d").map_err(|e| e.to_string())?;
