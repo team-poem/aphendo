@@ -9,7 +9,12 @@ use std::sync::Mutex;
 pub enum CaptureStatus {
     Queued,
     Running,
-    Done { added: u32 },
+    /// `held`: results parked for duplicate review instead of added.
+    Done {
+        added: u32,
+        #[serde(default)]
+        held: u32,
+    },
     Failed { error: String },
 }
 
@@ -48,6 +53,9 @@ pub struct Todo {
     #[serde(default)]
     pub repeat: Option<Repeat>,
     pub created_at: DateTime<Utc>,
+    /// Captures linked later as more evidence for the same work; `capture_id` stays the first one.
+    #[serde(default)]
+    pub extra_captures: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -85,6 +93,7 @@ impl Todo {
             priority: 0,
             repeat: None,
             created_at: Utc::now(),
+            extra_captures: Vec::new(),
         }
     }
 }
@@ -146,6 +155,40 @@ pub struct Data {
     pub todos: Vec<Todo>,
     #[serde(default)]
     pub calls: Vec<CallNote>,
+    #[serde(default)]
+    pub pending: Vec<Pending>,
+}
+
+/// A new todo held back because it looks like one already listed. Nothing is merged or dropped
+/// until the user picks what to do with it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Pending {
+    pub id: String,
+    pub todo: Todo,
+    pub matches: Vec<Match>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Match {
+    pub todo_id: String,
+    pub reasons: Vec<String>,
+}
+
+/// What the user decided for a held todo.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum Resolve {
+    /// The listed one stands; the new one is dropped.
+    Keep,
+    /// The listed one gains the new one's capture as evidence and is otherwise untouched.
+    Attach { todo_id: String },
+    /// They are different work; the new one is added.
+    Add,
+}
+
+pub enum Added {
+    Todo(Todo),
+    Held(Pending),
 }
 
 /// A phone-call memo: who called and what was said. Kept apart from todos.
@@ -176,6 +219,69 @@ fn check_off(d: &mut Data, i: usize, at: DateTime<Utc>) {
 
 fn normalize(title: &str) -> String {
     title.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+/// Dice coefficient over character pairs, spaces ignored: 1.0 for the same text, 0.0 for nothing shared.
+fn similar(a: &str, b: &str) -> f32 {
+    let pairs = |s: &str| {
+        let c: Vec<char> = s.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect();
+        c.windows(2).map(|w| (w[0], w[1])).collect::<Vec<_>>()
+    };
+    let (a, mut b) = (pairs(a), pairs(b));
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let total = (a.len() + b.len()) as f32;
+    let mut shared = 0;
+    for p in &a {
+        if let Some(i) = b.iter().position(|q| q == p) {
+            b.swap_remove(i);
+            shared += 1;
+        }
+    }
+    2.0 * shared as f32 / total
+}
+
+/// Why `new` might be `old` again, or None when it plainly is not. A like title on another due date is a
+/// separate occurrence unless the body matches too, and never for a repeating todo's other round.
+fn suspect(new: &Todo, old: &Todo) -> Option<Vec<String>> {
+    let pct = |x: f32| (x * 100.0).round() as u32;
+    let body = |t: &Todo| [&t.method, &t.detail].into_iter().flatten().cloned().collect::<Vec<_>>().join(" ");
+    let same_title = normalize(&new.title) == normalize(&old.title);
+    let title = if same_title { 1.0 } else { similar(&new.title, &old.title) };
+    let content = similar(&body(new), &body(old));
+    let same_due = new.due == old.due;
+    let other_round = !same_due && old.repeat.is_some();
+    if other_round || title < 0.6 || !(same_due || content >= 0.6) {
+        return None;
+    }
+    let mut why = vec![if same_title { "제목 같음".to_string() } else { format!("제목 비슷함 {}%", pct(title)) }];
+    if same_due {
+        why.push(new.due.map_or("둘 다 마감 없음".into(), |d| format!("마감일 같음 {}", d.format("%-m/%-d"))));
+    }
+    if content >= 0.6 {
+        why.push(format!("내용 비슷함 {}%", pct(content)));
+    }
+    if new.sender.is_some() && new.sender == old.sender {
+        why.push("발신자 같음".into());
+    }
+    Some(why)
+}
+
+fn matches_for(new: &Todo, todos: &[Todo]) -> Vec<Match> {
+    todos.iter().filter_map(|old| suspect(new, old).map(|reasons| Match { todo_id: old.id.clone(), reasons })).collect()
+}
+
+/// Adds `t`, or parks it for review when it looks like a listed todo.
+fn add_or_hold(d: &mut Data, t: Todo) -> Added {
+    let matches = matches_for(&t, &d.todos);
+    if matches.is_empty() {
+        d.todos.push(t.clone());
+        return Added::Todo(t);
+    }
+    let p = Pending { id: new_id(), todo: t, matches };
+    d.pending.push(p.clone());
+    Added::Held(p)
 }
 
 pub fn new_id() -> String {
@@ -256,41 +362,68 @@ impl Store {
             if matches!(d.captures[i].status, CaptureStatus::Queued | CaptureStatus::Running) {
                 return None;
             }
-            d.todos.iter_mut().filter(|t| t.capture_id == capture_id).for_each(|t| t.capture_id.clear());
+            for t in d.todos.iter_mut().chain(d.pending.iter_mut().map(|p| &mut p.todo)) {
+                if t.capture_id == capture_id {
+                    t.capture_id.clear();
+                }
+                t.extra_captures.retain(|c| c != capture_id);
+            }
             Some(d.captures.remove(i).image)
         })
     }
 
-    /// Appends the remote result and marks the capture Done. Skips a title this capture already
-    /// produced, and one another capture already holds with the same due date (the same notice
-    /// captured twice), so deleting a todo never leaves an identical twin behind. Returns how many were new.
+    /// Appends the remote result and marks the capture Done. A title this capture already produced is
+    /// skipped (re-analysis reads the same evidence again). One that looks like another listed todo,
+    /// including one earlier in this same result, is held for review. Returns how many were added.
     pub fn complete(&self, capture_id: &str, items: Vec<ExtractedTodo>) -> std::io::Result<u32> {
         self.mutate(|d| {
-            let mut added = 0;
+            let (mut added, mut held) = (0, 0);
             for item in items {
                 let title = item.title.split_whitespace().collect::<Vec<_>>().join(" ");
                 let key = normalize(&title);
-                if title.is_empty()
-                    || d.todos.iter().any(|t| normalize(&t.title) == key && (t.capture_id == capture_id || t.due == item.due))
-                {
+                let mine = d.todos.iter().chain(d.pending.iter().map(|p| &p.todo));
+                if title.is_empty() || mine.into_iter().any(|t| t.capture_id == capture_id && normalize(&t.title) == key) {
                     continue;
                 }
-                d.todos.push(Todo::new(capture_id, title, item));
-                added += 1;
+                match add_or_hold(d, Todo::new(capture_id, title, item)) {
+                    Added::Todo(_) => added += 1,
+                    Added::Held(_) => held += 1,
+                }
             }
             if let Some(c) = d.captures.iter_mut().find(|c| c.id == capture_id) {
-                c.status = CaptureStatus::Done { added };
+                c.status = CaptureStatus::Done { added, held };
             }
             added
         })
     }
 
-    /// A todo with no capture behind it. None when the title is blank.
-    pub fn add_todo(&self, item: ExtractedTodo, priority: u8, repeat: Option<Repeat>) -> std::io::Result<Option<Todo>> {
+    /// A todo with no capture behind it, held for review when it looks like a listed one. None when the title is blank.
+    pub fn add_todo(&self, item: ExtractedTodo, priority: u8, repeat: Option<Repeat>) -> std::io::Result<Option<Added>> {
         let Some(title) = clean(Some(item.title.clone())) else { return Ok(None) };
         let todo = Todo { priority, repeat, ..Todo::new("", title, item) };
-        self.mutate(|d| d.todos.push(todo.clone()))?;
-        Ok(Some(todo))
+        self.mutate(|d| Some(add_or_hold(d, todo)))
+    }
+
+    /// Applies the user's call on a held todo. False when it or the todo to attach to is gone.
+    pub fn resolve(&self, id: &str, r: Resolve) -> std::io::Result<bool> {
+        self.mutate(|d| {
+            let Some(i) = d.pending.iter().position(|p| p.id == id) else { return false };
+            match r {
+                Resolve::Keep => {}
+                Resolve::Add => d.todos.push(d.pending[i].todo.clone()),
+                Resolve::Attach { todo_id } => {
+                    let cap = d.pending[i].todo.capture_id.clone();
+                    let Some(t) = d.todos.iter_mut().find(|t| t.id == todo_id) else { return false };
+                    if t.capture_id.is_empty() {
+                        t.capture_id = cap;
+                    } else if !cap.is_empty() && t.capture_id != cap && !t.extra_captures.contains(&cap) {
+                        t.extra_captures.push(cap);
+                    }
+                }
+            }
+            d.pending.remove(i);
+            true
+        })
     }
 
     /// Returns false when no todo has this id.
@@ -387,6 +520,13 @@ mod tests {
         ExtractedTodo { title: title.into(), ..Default::default() }
     }
 
+    fn added(a: Option<Added>) -> Todo {
+        match a {
+            Some(Added::Todo(t)) => t,
+            _ => panic!("expected the todo to be added"),
+        }
+    }
+
     #[test]
     fn delete_capture_keeps_todos_and_refuses_in_progress() {
         let s = Store::open(&tmp()).unwrap();
@@ -409,12 +549,14 @@ mod tests {
         assert_eq!(s.complete(&c.id, vec![item("  보고서   제출 "), item("교육 이수"), item(" ")]).unwrap(), 1);
         let d = s.snapshot();
         assert_eq!(d.todos.len(), 3);
-        assert_eq!(d.captures[0].status, CaptureStatus::Done { added: 1 });
+        assert_eq!(d.captures[0].status, CaptureStatus::Done { added: 1, held: 0 });
 
         let other = s.create_capture(new_id(), "b.png".into()).unwrap();
-        assert_eq!(s.complete(&other.id, vec![item("보고서 제출")]).unwrap(), 0, "same notice captured twice");
+        assert_eq!(s.complete(&other.id, vec![item("보고서 제출")]).unwrap(), 0, "same notice captured twice is held, not added");
+        assert_eq!(s.snapshot().pending.len(), 1);
         let later = ExtractedTodo { title: "보고서 제출".into(), due: NaiveDate::from_ymd_opt(2026, 12, 1), ..Default::default() };
-        assert_eq!(s.complete(&other.id, vec![later]).unwrap(), 1, "same title, different due is a new task");
+        let third = s.create_capture(new_id(), "c.png".into()).unwrap();
+        assert_eq!(s.complete(&third.id, vec![later]).unwrap(), 1, "same title, different due is a new task");
 
         assert!(s.retry(&c.id).unwrap().is_some(), "a done capture can be analyzed again");
         let gone = s.snapshot().todos.iter().find(|t| t.capture_id == c.id && t.title == "회의 참석").unwrap().id.clone();
@@ -426,7 +568,7 @@ mod tests {
     fn manual_todo_needs_a_title_and_survives_completion() {
         let s = Store::open(&tmp()).unwrap();
         assert!(s.add_todo(item("  "), 0, None).unwrap().is_none());
-        let t = s.add_todo(ExtractedTodo { title: " 주간 보고 ".into(), sender: Some("팀장".into()), ..Default::default() }, 2, None).unwrap().unwrap();
+        let t = added(s.add_todo(ExtractedTodo { title: " 주간 보고 ".into(), sender: Some("팀장".into()), ..Default::default() }, 2, None).unwrap());
         assert_eq!((t.title.as_str(), t.capture_id.as_str(), t.priority), ("주간 보고", "", 2));
         s.update_todo(&t.id, TodoPatch { done: Some(true), ..Default::default() }).unwrap();
         assert!(s.snapshot().todos.iter().any(|x| x.id == t.id && x.done), "completing keeps the record");
@@ -436,7 +578,7 @@ mod tests {
     fn checking_off_a_repeating_todo_adds_the_next_one() {
         let s = Store::open(&tmp()).unwrap();
         let due = NaiveDate::from_ymd_opt(2026, 1, 31);
-        let t = s.add_todo(ExtractedTodo { title: "월간 보고".into(), due, ..Default::default() }, 1, Some(Repeat::Monthly)).unwrap().unwrap();
+        let t = added(s.add_todo(ExtractedTodo { title: "월간 보고".into(), due, ..Default::default() }, 1, Some(Repeat::Monthly)).unwrap());
         let done = || TodoPatch { done: Some(true), ..Default::default() };
         s.update_todo(&t.id, done()).unwrap();
         s.update_todo(&t.id, TodoPatch { done: Some(false), ..Default::default() }).unwrap();
@@ -445,7 +587,7 @@ mod tests {
         assert_eq!(open.len(), 1, "re-checking does not stack copies");
         assert_eq!((open[0].due, open[0].priority, open[0].repeat), (NaiveDate::from_ymd_opt(2026, 2, 28), 1, Some(Repeat::Monthly)));
 
-        let w = s.add_todo(ExtractedTodo { title: "주간업무보고".into(), due: NaiveDate::from_ymd_opt(2026, 10, 30), ..Default::default() }, 0, Some(Repeat::Weekly)).unwrap().unwrap();
+        let w = added(s.add_todo(ExtractedTodo { title: "주간업무보고".into(), due: NaiveDate::from_ymd_opt(2026, 10, 30), ..Default::default() }, 0, Some(Repeat::Weekly)).unwrap());
         s.update_todo(&w.id, done()).unwrap();
         assert!(s.snapshot().todos.iter().any(|x| !x.done && x.due == NaiveDate::from_ymd_opt(2026, 11, 6)));
         let off: TodoPatch = serde_json::from_str(r#"{"repeat":null}"#).unwrap();
@@ -458,7 +600,7 @@ mod tests {
     fn finishing_keeps_the_note_and_opens_follow_ups() {
         let s = Store::open(&tmp()).unwrap();
         let item = ExtractedTodo { title: "예산 보고".into(), sender: Some("기획처".into()), due: NaiveDate::from_ymd_opt(2026, 11, 5), ..Default::default() };
-        let t = s.add_todo(item, 2, None).unwrap().unwrap();
+        let t = added(s.add_todo(item, 2, None).unwrap());
         let f: Finish = serde_json::from_str(r#"{"done_on":"2026-11-02","note":" 결재 완료, 증빙 추가 요청 받음 ","follow_ups":[{"title":"증빙 제출","due":"2026-11-09","sender":"기획처","priority":1},{"title":" "}]}"#).unwrap();
         assert!(s.finish_todo(&t.id, f).unwrap());
         let d = s.snapshot();
@@ -471,6 +613,62 @@ mod tests {
         assert_eq!((open[0].title.as_str(), open[0].sender.as_deref(), open[0].due, open[0].priority), ("증빙 제출", Some("기획처"), NaiveDate::from_ymd_opt(2026, 11, 9), 1));
         assert_eq!(open[0].capture_id, t.capture_id);
         assert!(!s.finish_todo("nope", serde_json::from_str(r#"{"done_on":"2026-11-02"}"#).unwrap()).unwrap());
+    }
+
+    fn due(m: u32, d: u32) -> Option<NaiveDate> {
+        NaiveDate::from_ymd_opt(2026, m, d)
+    }
+
+    #[test]
+    fn look_alikes_are_held_with_reasons_and_never_merged() {
+        let s = Store::open(&tmp()).unwrap();
+        let a = s.create_capture(new_id(), "a.png".into()).unwrap();
+        let notice = |title: &str, d| ExtractedTodo { title: title.into(), due: d, detail: Some("본관 3층 총무팀에 서면 제출".into()), ..Default::default() };
+        s.complete(&a.id, vec![notice("연말정산 서류 제출", due(11, 6))]).unwrap();
+        let first = s.snapshot().todos[0].clone();
+        s.update_todo(&first.id, TodoPatch { done: Some(true), ..Default::default() }).unwrap();
+
+        let b = s.create_capture(new_id(), "b.png".into()).unwrap();
+        let again = vec![notice("연말정산 서류 제출", due(11, 6)), notice("연말정산 관련 서류 제출", due(11, 6)), item("체육대회 참가 신청")];
+        assert_eq!(s.complete(&b.id, again).unwrap(), 1, "only the unrelated one is added");
+        let d = s.snapshot();
+        assert_eq!(d.captures[1].status, CaptureStatus::Done { added: 1, held: 2 });
+        let [same, close] = [&d.pending[0], &d.pending[1]];
+        assert_eq!(same.matches[0].todo_id, first.id);
+        assert!(same.matches[0].reasons.contains(&"제목 같음".to_string()), "{:?}", same.matches[0].reasons);
+        assert!(close.matches[0].reasons[0].starts_with("제목 비슷함"), "{:?}", close.matches[0].reasons);
+
+        assert!(s.resolve(&same.id, Resolve::Attach { todo_id: first.id.clone() }).unwrap());
+        let t = s.snapshot().todos.into_iter().find(|t| t.id == first.id).unwrap();
+        assert_eq!((t.title.as_str(), t.done, t.capture_id.as_str(), t.extra_captures.clone()), ("연말정산 서류 제출", true, a.id.as_str(), vec![b.id.clone()]), "attach links evidence only");
+        assert!(s.resolve(&close.id, Resolve::Add).unwrap());
+        assert_eq!(s.snapshot().todos.len(), 3);
+        assert!(s.snapshot().pending.is_empty());
+        assert!(!s.resolve("nope", Resolve::Keep).unwrap());
+
+        assert!(s.delete_capture(&b.id).unwrap().is_some());
+        assert!(s.snapshot().todos.iter().all(|t| t.extra_captures.is_empty() && t.capture_id != b.id), "deleting a capture unlinks it everywhere");
+    }
+
+    #[test]
+    fn a_repeating_todos_next_round_is_not_a_duplicate() {
+        let s = Store::open(&tmp()).unwrap();
+        let weekly = ExtractedTodo { title: "주간업무보고".into(), due: due(11, 6), detail: Some("팀 공유폴더에 업로드".into()), ..Default::default() };
+        added(s.add_todo(weekly.clone(), 0, Some(Repeat::Weekly)).unwrap());
+        let next = ExtractedTodo { due: due(11, 13), ..weekly.clone() };
+        assert!(matches!(s.add_todo(next, 0, None).unwrap(), Some(Added::Todo(_))), "next week's round is added");
+        assert!(matches!(s.add_todo(weekly, 0, None).unwrap(), Some(Added::Held(_))), "the same round again is held");
+    }
+
+    #[test]
+    fn older_store_files_load_without_the_new_fields() {
+        let dir = tmp();
+        let old = r#"{"captures":[{"id":"c1","image":"c1.png","status":{"kind":"done","added":1},"created_at":"2026-10-01T00:00:00Z"}],
+            "todos":[{"id":"t1","capture_id":"c1","title":"보고","due":null,"detail":null,"done":false,"created_at":"2026-10-01T00:00:00Z"}]}"#;
+        std::fs::write(dir.join("store.json"), old).unwrap();
+        let d = Store::open(&dir).unwrap().snapshot();
+        assert_eq!(d.captures[0].status, CaptureStatus::Done { added: 1, held: 0 });
+        assert!(d.todos[0].extra_captures.is_empty() && d.pending.is_empty() && d.calls.is_empty());
     }
 
     #[test]

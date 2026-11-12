@@ -61,6 +61,7 @@ pub fn router(dir: PathBuf) -> std::io::Result<Router> {
         .route("/api/calls/{id}", axum::routing::delete(delete_call))
         .route("/api/todos/{id}", patch(patch_todo).delete(delete_todo))
         .route("/api/todos/{id}/finish", post(finish_todo))
+        .route("/api/pending/{id}/resolve", post(resolve_pending))
         .layer(DefaultBodyLimit::max(30 * 1024 * 1024))
         .layer(cors)
         .with_state(app))
@@ -174,8 +175,17 @@ async fn add_todo(State(app): State<App>, Json(p): Json<store::NewTodo>) -> ApiR
         return Err((StatusCode::BAD_REQUEST, "중요도는 0~3".into()));
     }
     match app.store.add_todo(p.todo, p.priority, p.repeat).map_err(internal)? {
-        Some(t) => Ok((StatusCode::CREATED, Json(t)).into_response()),
+        Some(store::Added::Todo(t)) => Ok((StatusCode::CREATED, Json(t)).into_response()),
+        // Looks like a listed todo: parked for the user to compare, answered with 202.
+        Some(store::Added::Held(p)) => Ok((StatusCode::ACCEPTED, Json(serde_json::json!({ "pending": p }))).into_response()),
         None => Err((StatusCode::BAD_REQUEST, "업무내용은 비울 수 없습니다".into())),
+    }
+}
+
+async fn resolve_pending(State(app): State<App>, Path(id): Path<String>, Json(r): Json<store::Resolve>) -> ApiResult {
+    match app.store.resolve(&id, r).map_err(internal)? {
+        true => Ok(StatusCode::NO_CONTENT.into_response()),
+        false => Err((StatusCode::NOT_FOUND, "이미 처리했거나 연결할 할일이 없습니다".into())),
     }
 }
 

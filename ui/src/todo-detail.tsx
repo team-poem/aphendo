@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useRef, useState } from "react";
 import { format } from "date-fns";
-import { Plus, X } from "lucide-react";
-import { API } from "./api";
+import { Maximize2, Plus, X } from "lucide-react";
+import { API, imageUrl } from "./api";
 import { cn } from "@/lib/utils";
+import { useLayer } from "./layer";
 
 export type Todo = {
   id: string;
@@ -19,6 +20,8 @@ export type Todo = {
   priority: number;
   repeat: Repeat | null;
   created_at: string;
+  /** Captures linked later as more evidence. Missing from servers before this field. */
+  extra_captures?: string[];
 };
 export type Repeat = "weekly" | "monthly";
 export const REPEAT_LABEL: Record<Repeat, string> = { weekly: "매주", monthly: "매월" };
@@ -32,19 +35,43 @@ const FIELDS: { key: Text; label: string; long?: boolean }[] = [
   { key: "detail", label: "비고", long: true },
 ];
 
+/** Asked before a popup with unsaved edits closes. */
+export function DiscardBar({ onKeep, onDiscard }: { onKeep: () => void; onDiscard: () => void }) {
+  return (
+    <div role="alertdialog" aria-label="저장하지 않은 수정" className="flex flex-wrap items-center gap-2 border-b border-orange-500/40 bg-orange-500/10 px-4 py-2.5 text-sm">
+      <span className="flex-1">저장하지 않은 수정 내용이 있습니다. 닫으면 사라집니다.</span>
+      <button type="button" data-autofocus className="rounded-sm border border-white/[0.15] px-2.5 py-1 hover:bg-white/10" onClick={onKeep}>
+        계속 편집
+      </button>
+      <button type="button" className="rounded-sm px-2.5 py-1 text-red-300 hover:bg-red-500/10 light:text-red-700" onClick={onDiscard}>
+        버리고 닫기
+      </button>
+    </div>
+  );
+}
+
+/** Close for a popup that may hold edits: asks first when `dirty`, and a second Esc while asking closes for good. */
+export function useGuardedClose(dirty: boolean, onClose: () => void) {
+  const [asking, setAsking] = useState(false);
+  const request = () => (dirty && !asking ? setAsking(true) : onClose());
+  return { asking, request, keep: () => setAsking(false) };
+}
+
 /** Shows what the extractor read next to the capture so the user can check and correct every field.
  *  A todo with an empty id is a new one the user is typing in, with no capture behind it. */
 export function TodoDetail({
   todo,
-  imageUrl,
+  captureIds,
   onClose,
   onChanged,
   onReopen,
   onFinish,
   onDraft,
+  onOpenCapture,
 }: {
   todo: Todo;
-  imageUrl: string | null;
+  /** Evidence to show beside the form, first one largest. */
+  captureIds: string[];
   onClose: () => void;
   onChanged: () => void;
   onReopen: (due: string | null) => void;
@@ -52,16 +79,16 @@ export function TodoDetail({
   onFinish?: (t: Todo) => void;
   /** Hands the filled-in form back instead of saving it. */
   onDraft?: (d: TodoDraft) => void;
+  onOpenCapture?: (id: string) => void;
 }) {
-  const [form, setForm] = useState(() => ({ ...todo, due: todo.due ?? "" }));
+  const [initial] = useState(() => ({ ...todo, due: todo.due ?? "" }));
+  const [form, setForm] = useState(initial);
   const [zoom, setZoom] = useState(false);
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    document.addEventListener("keydown", esc);
-    return () => document.removeEventListener("keydown", esc);
-  }, [onClose]);
+  const guard = useGuardedClose(JSON.stringify(form) !== JSON.stringify(initial), onClose);
+  const ref = useRef<HTMLFormElement>(null);
+  useLayer(guard.request, ref);
+  const imageUrlOf = captureIds[0] ? imageUrl(captureIds[0]) : null;
 
   const isNew = !todo.id;
   async function send(init: RequestInit) {
@@ -102,14 +129,15 @@ export function TodoDetail({
     return true;
   }
 
-  const input = "mt-1 w-full rounded-sm border border-white/[0.1] bg-white/[0.03] px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500/60";
+  const input = "mt-1 w-full rounded-sm border border-white/[0.12] bg-white/[0.03] px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500/60";
   const btn = "rounded-sm px-3 py-1.5 text-sm";
   return (
-    <div className="absolute inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/60 p-4" onClick={onClose}>
+    <div className="absolute inset-0 z-40 flex items-start justify-center bg-black/60 p-4" onClick={guard.request}>
       <form
+        ref={ref}
         role="dialog"
-        aria-label="할일 상세"
-        className={cn("flex w-full flex-col overflow-hidden rounded-md border border-white/[0.08] bg-background shadow-2xl", imageUrl ? "max-w-4xl" : "max-w-md")}
+        aria-label={isNew ? "할일 추가" : "할일 상세"}
+        className={cn("flex max-h-full w-full flex-col overflow-y-auto rounded-lg border border-white/[0.1] bg-popup shadow-2xl", imageUrlOf ? "max-w-4xl" : "max-w-md")}
         onClick={(e) => e.stopPropagation()}
         onSubmit={(e) => {
           e.preventDefault();
@@ -117,26 +145,37 @@ export function TodoDetail({
         }}
       >
         <div className="flex items-center border-b border-white/[0.06] px-4 py-2.5">
-          <h2 className="flex-1 text-sm font-semibold">{isNew ? "할일 추가" : imageUrl ? "할일 상세 · 캡처와 비교해 고쳐 주세요" : "할일 상세"}</h2>
-          <button type="button" className="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white" title="닫기" onClick={onClose}>
+          <h2 className="flex-1 text-sm font-semibold">{isNew ? "할일 추가" : imageUrlOf ? "할일 상세 · 캡처와 비교해 고쳐 주세요" : "할일 상세"}</h2>
+          <button type="button" className="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white" title="닫기 (Esc)" aria-label="닫기" onClick={guard.request}>
             <X size={16} />
           </button>
         </div>
+        {guard.asking && <DiscardBar onKeep={guard.keep} onDiscard={onClose} />}
 
         <div className="flex flex-col md:flex-row">
-          {imageUrl && (
-            <div className="max-h-[70vh] overflow-auto border-white/[0.06] bg-white/[0.02] p-3 md:w-1/2 md:border-r">
+          {imageUrlOf && (
+            <div className="max-h-[70vh] space-y-2 overflow-auto border-white/[0.06] bg-white/[0.02] p-3 md:w-1/2 md:border-r">
               <img
-                src={imageUrl}
+                src={imageUrlOf}
                 alt="원본 캡처"
                 title={zoom ? "축소" : "확대"}
                 onClick={() => setZoom(!zoom)}
                 className={cn(zoom ? "max-w-none cursor-zoom-out" : "w-full cursor-zoom-in")}
               />
+              {onOpenCapture && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {captureIds.map((id, i) => (
+                    <button key={id} type="button" className="inline-flex items-center gap-1 rounded-sm border border-white/[0.12] px-2 py-1 text-xs text-white/70 hover:bg-white/10" onClick={() => onOpenCapture(id)}>
+                      <Maximize2 size={12} aria-hidden />
+                      {i === 0 ? "원본 크게 보기" : `추가 근거 ${i}`}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
-          <div className={cn("space-y-3 p-4", imageUrl && "md:w-1/2")}>
+          <div className={cn("space-y-3 p-4", imageUrlOf && "md:w-1/2")}>
             {FIELDS.map(({ key, label, long }) => (
               <label key={key} className="block text-xs text-white/50">
                 {label}
@@ -225,7 +264,7 @@ export function TodoDetail({
                 </button>
               )}
               <span className="flex-1" />
-              <button type="button" className={cn(btn, "border border-white/[0.1] text-white/70 hover:bg-white/10")} onClick={onClose}>
+              <button type="button" className={cn(btn, "border border-white/[0.1] text-white/70 hover:bg-white/10")} onClick={guard.request}>
                 취소
               </button>
               <button type="submit" className={cn(btn, "bg-orange-500 font-medium text-[#fff] hover:bg-orange-600")}>
@@ -242,19 +281,15 @@ export function TodoDetail({
 export type TodoDraft = Pick<Todo, "title" | "due" | "priority" | "repeat"> & { sender: string; method: string; contact: string; detail: string };
 
 /** Checking a todo off asks when and how it was finished and what it led to. The 추가 할일 drafts are created only on 완료. */
-export function FinishTodo({ todo, imageUrl, onClose, onChanged }: { todo: Todo; imageUrl: string | null; onClose: () => void; onChanged: () => void }) {
+export function FinishTodo({ todo, captureIds, onClose, onChanged }: { todo: Todo; captureIds: string[]; onClose: () => void; onChanged: () => void }) {
   const [doneOn, setDoneOn] = useState(() => format(new Date(), "yyyy-MM-dd"));
   const [note, setNote] = useState("");
   const [followUps, setFollowUps] = useState<TodoDraft[]>([]);
   const [drafting, setDrafting] = useState(false);
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (drafting) return;
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    document.addEventListener("keydown", esc);
-    return () => document.removeEventListener("keydown", esc);
-  }, [onClose, drafting]);
+  const guard = useGuardedClose(!!note.trim() || followUps.length > 0, onClose);
+  const ref = useRef<HTMLFormElement>(null);
+  useLayer(guard.request, ref);
 
   async function finish() {
     const r = await fetch(`${API}/api/todos/${todo.id}/finish`, {
@@ -271,11 +306,12 @@ export function FinishTodo({ todo, imageUrl, onClose, onChanged }: { todo: Todo;
   const btn = "rounded-sm px-3 py-1.5 text-sm";
   return (
     <>
-    <div className="absolute inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/60 p-4" onClick={onClose}>
+    <div className="absolute inset-0 z-40 flex items-start justify-center bg-black/60 p-4" onClick={guard.request}>
       <form
+        ref={ref}
         role="dialog"
         aria-label="할일 완료"
-        className="flex w-full max-w-md flex-col overflow-hidden rounded-md border border-white/[0.08] bg-background shadow-2xl"
+        className="flex max-h-full w-full max-w-md flex-col overflow-y-auto rounded-lg border border-white/[0.1] bg-popup shadow-2xl"
         onClick={(e) => e.stopPropagation()}
         onSubmit={(e) => {
           e.preventDefault();
@@ -286,10 +322,11 @@ export function FinishTodo({ todo, imageUrl, onClose, onChanged }: { todo: Todo;
           <h2 className="min-w-0 flex-1 truncate text-sm font-semibold" title={todo.title}>
             완료 · {todo.title}
           </h2>
-          <button type="button" className="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white" title="닫기" onClick={onClose}>
+          <button type="button" className="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white" title="닫기 (Esc)" aria-label="닫기" onClick={guard.request}>
             <X size={16} />
           </button>
         </div>
+        {guard.asking && <DiscardBar onKeep={guard.keep} onDiscard={onClose} />}
 
         <div className="space-y-3 p-4">
           <label className="block text-xs text-white/50">
@@ -327,7 +364,7 @@ export function FinishTodo({ todo, imageUrl, onClose, onChanged }: { todo: Todo;
           {error && <p className="break-words text-xs text-red-300 light:text-red-700">{error}</p>}
 
           <div className="flex justify-end gap-2 pt-1">
-            <button type="button" className={cn(btn, "border border-white/[0.1] text-white/70 hover:bg-white/10")} onClick={onClose}>
+            <button type="button" className={cn(btn, "border border-white/[0.1] text-white/70 hover:bg-white/10")} onClick={guard.request}>
               취소
             </button>
             <button type="submit" className={cn(btn, "bg-orange-500 font-medium text-[#fff] hover:bg-orange-600")}>
@@ -340,7 +377,7 @@ export function FinishTodo({ todo, imageUrl, onClose, onChanged }: { todo: Todo;
     {drafting && (
       <TodoDetail
         todo={{ ...todo, id: "", title: "", due: doneOn, detail: null, done: false, done_at: null, done_note: null, priority: 0, repeat: null }}
-        imageUrl={imageUrl}
+        captureIds={captureIds}
         onClose={() => setDrafting(false)}
         onChanged={() => {}}
         onReopen={() => {}}
