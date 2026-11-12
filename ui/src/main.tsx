@@ -632,7 +632,7 @@ function SideOverlay({ onClose, children }: { onClose: () => void; children: Rea
   useLayer(onClose, ref);
   return (
     <div className="absolute inset-0 z-30 bg-black/50 lg:hidden" onClick={onClose}>
-      <div ref={ref} tabIndex={-1} className="side-panel h-full w-[min(300px,85%)] overflow-y-auto shadow-2xl outline-none" onClick={(e) => e.stopPropagation()}>
+      <div ref={ref} tabIndex={-1} className="side-panel flex h-full w-[min(300px,85%)] flex-col shadow-2xl outline-none" onClick={(e) => e.stopPropagation()}>
         {children}
       </div>
     </div>
@@ -852,8 +852,11 @@ function App() {
 
   const side = (
     <>
-      <MiniCalendar anchor={view === "week" ? cursor : selected} byDay={byDay} onPick={pickDay} />
-      <div className="mt-3">
+      <div className="shrink-0 pb-3">
+        <MiniCalendar anchor={view === "week" ? cursor : selected} byDay={byDay} onPick={pickDay} />
+      </div>
+      {/* Only the lists scroll; the calendar above and the buttons below stay put. */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
         <Section title={`오늘 할 일 · ${format(startOfToday(), "M/d (EEE)", { locale: ko })}`} count={todayTodos.filter((t) => !t.done).length}>
           {todayTodos.length ? (
             <ul className="mt-1">
@@ -876,7 +879,8 @@ function App() {
             <p className="px-1.5 pt-1 text-sm text-white/45">기한이 지난 할일이 없습니다.</p>
           )}
         </Section>
-        <section className="grid grid-cols-2 gap-1.5 border-t border-white/[0.08] p-3 text-sm">
+      </div>
+      <section className="grid shrink-0 grid-cols-2 gap-1.5 border-t border-white/[0.08] p-3 text-sm">
           {(
             [
               ["마감 없음", noDue.length, () => openList("todo", "nodue")],
@@ -890,8 +894,7 @@ function App() {
               <span className="tabular-nums text-white/55">{n}</span>
             </button>
           ))}
-        </section>
-      </div>
+      </section>
     </>
   );
 
@@ -984,7 +987,7 @@ function App() {
       )}
 
       <div className="relative flex min-h-0 flex-1">
-        <aside className="side-panel hidden w-[280px] shrink-0 overflow-y-auto border-r border-white/[0.08] lg:block">{side}</aside>
+        <aside className="side-panel hidden w-[280px] shrink-0 flex-col border-r border-white/[0.08] lg:flex">{side}</aside>
         <main className="min-w-0 flex-1 overflow-y-auto">{view === "month" ? <MonthGrid month={cursor} byDay={byDay} selected={selected} onDay={showDay} /> : <WeekBoard anchor={cursor} byDay={byDay} onDay={showDay} />}</main>
         {drawer && <ListDrawer state={state} tab={tab} setTab={setTab} scope={scope} setScope={setScope} selected={selected} inSpan={inSpan} onClose={() => setDrawer(false)} />}
       </div>
