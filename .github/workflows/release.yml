@@ -68,4 +68,4 @@ jobs:
           releaseDraft: true
           prerelease: false
           updaterJsonPreferNsis: true
-          args: --locked --target x86_64-pc-windows-msvc --bundles nsis ${{ inputs.runner == 'ubuntu-24.04' && '--runner cargo-xwin' || '' }}
+          args: --target x86_64-pc-windows-msvc --bundles nsis ${{ inputs.runner == 'ubuntu-24.04' && '--runner cargo-xwin' || '' }} -- --locked
