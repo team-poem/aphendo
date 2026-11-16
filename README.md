@@ -53,7 +53,7 @@ pnpm test           # 캡처 영역 좌표 계산 테스트
 
 ### macOS 에서 Windows 설치 파일 만들기
 
-[Tauri 문서의 교차 컴파일](https://v2.tauri.app/distribute/windows-installer/#build-windows-apps-on-linux-and-macos) 방식입니다. 토큰은 빌드에 넣지 않습니다. 실제 배포는 아래 릴리즈 스크립트로 합니다.
+[Tauri 문서의 교차 컴파일](https://v2.tauri.app/distribute/windows-installer/#build-windows-apps-on-linux-and-macos) 방식입니다. 토큰은 빌드에 넣지 않습니다.
 
 ```sh
 rustup target add x86_64-pc-windows-msvc
@@ -68,11 +68,23 @@ pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles n
 
 설치된 앱은 켜질 때와 30분마다 `releases/latest/download/latest.json` 을 확인합니다. 새 버전이 있으면 제목 줄에 **업데이트** 버튼이 뜨고, 누르면 받아서 서명을 확인한 뒤 설치하고 다시 시작합니다.
 
+`src-tauri/tauri.conf.json`의 버전을 올리고 같은 버전의 태그를 푸시한 뒤, 해당 태그를 지정해 원격 빌드를 시작합니다.
+
+```sh
+gh workflow run release.yml --ref v0.2.17
+```
+
+GitHub Actions가 테스트 후 서명된 Windows 설치 파일과 `latest.json`을 포함한 초안 릴리즈를 만듭니다. GitHub에서 설치 파일과 업데이트 정보를 확인한 뒤 초안을 게시합니다. 태그와 앱 버전이 다르거나 브랜치를 지정하면 빌드가 중단됩니다. 기존 로컬 릴리즈 스크립트와 동시에 배포하지 않도록 태그 푸시만으로는 워크플로가 자동 실행되지 않습니다.
+
+자동 빌드에는 저장소의 Actions secret `TAURI_SIGNING_PRIVATE_KEY`에 업데이트 서명 비밀 키 내용이 필요합니다. 로컬 키는 `~/.tauri/aphendo.key`에 보관하고 별도로 백업합니다. 이 키를 잃으면 기존 설치본에 서명된 업데이트를 제공할 수 없습니다. v0.2.17에서 서명 키가 바뀌었으므로 이전 버전 사용자는 해당 설치 파일을 직접 내려받아 한 번 설치해야 합니다.
+
+macOS에서 직접 빌드하고 게시하는 기존 스크립트도 사용할 수 있습니다.
+
 ```sh
 scripts/release.sh 0.2.1 "바뀐 점 한 줄"
 ```
 
-버전을 올려 서명된 설치 파일을 빌드하고, 커밋과 태그를 푸시한 뒤 GitHub 릴리즈에 설치 파일과 `latest.json` 을 올립니다. 서명 비밀 키는 `~/.tauri/aphendo.key` 에 있어야 합니다. 이 키를 잃으면 이미 설치된 앱에 더는 업데이트를 보낼 수 없으니 따로 백업합니다.
+이 스크립트는 버전을 올려 서명된 설치 파일을 빌드하고, 커밋과 태그를 푸시한 뒤 릴리즈를 바로 게시합니다.
 
 ## 동작 메모
 
