@@ -71,10 +71,16 @@ pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles n
 `src-tauri/tauri.conf.json`의 버전을 올리고 같은 버전의 태그를 푸시한 뒤, 해당 태그를 지정해 원격 빌드를 시작합니다.
 
 ```sh
-gh workflow run release.yml --ref v0.2.17
+gh workflow run release.yml --ref main -f tag=v0.2.17
 ```
 
-GitHub Actions가 테스트 후 서명된 Windows 설치 파일과 `latest.json`을 포함한 초안 릴리즈를 만듭니다. GitHub에서 설치 파일과 업데이트 정보를 확인한 뒤 초안을 게시합니다. 태그와 앱 버전이 다르거나 브랜치를 지정하면 빌드가 중단됩니다. 기존 로컬 릴리즈 스크립트와 동시에 배포하지 않도록 태그 푸시만으로는 워크플로가 자동 실행되지 않습니다.
+Windows 실행기 배정이 오래 걸리면 Linux에서 Windows 설치 파일을 교차 빌드할 수 있습니다.
+
+```sh
+gh workflow run release.yml --ref main -f tag=v0.2.17 -f runner=ubuntu-24.04
+```
+
+워크플로는 지정한 태그의 소스를 확인한 뒤 테스트하고, 서명된 Windows 설치 파일과 `latest.json`을 포함한 초안 릴리즈를 만듭니다. GitHub에서 설치 파일과 업데이트 정보를 확인한 뒤 초안을 게시합니다. 태그와 앱 버전이 다르면 빌드가 중단됩니다. 기존 로컬 릴리즈 스크립트와 동시에 배포하지 않도록 태그 푸시만으로는 워크플로가 자동 실행되지 않습니다.
 
 자동 빌드에는 저장소의 Actions secret `TAURI_SIGNING_PRIVATE_KEY`에 업데이트 서명 비밀 키 내용이 필요합니다. 로컬 키는 `~/.tauri/aphendo.key`에 보관하고 별도로 백업합니다. 이 키를 잃으면 기존 설치본에 서명된 업데이트를 제공할 수 없습니다. v0.2.17에서 서명 키가 바뀌었으므로 이전 버전 사용자는 해당 설치 파일을 직접 내려받아 한 번 설치해야 합니다.
 
