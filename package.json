@@ -6,6 +6,7 @@
     "dev": "vite ui",
     "build": "tsc -p ui && vite build ui",
     "tauri": "tauri",
+    "icons": "node scripts/generate-icons.mjs",
     "test": "node ui/src/crop.test.ts",
     "test:release": "node --test scripts/release-signing.test.mjs"
   },

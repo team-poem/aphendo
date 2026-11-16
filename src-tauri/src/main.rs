@@ -165,6 +165,23 @@ async fn install_update(app: AppHandle) -> Result<(), String> {
     app.restart();
 }
 
+#[cfg(windows)]
+fn set_taskbar_icon(window: &tauri::WebviewWindow) -> Result<(), Box<dyn std::error::Error>> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::WindowsAndMessaging::{LoadIconW, SendMessageW, ICON_BIG, WM_SETICON};
+
+    // Tauri sets the small window icon; set the large icon from the same executable resource.
+    unsafe {
+        let module = GetModuleHandleW(PCWSTR::null())?;
+        let resource = PCWSTR(tauri::utils::platform::WINDOWS_APP_ICON_RESOURCE_ID as usize as *const u16);
+        let icon = LoadIconW(Some(module.into()), resource)?;
+        SendMessageW(window.hwnd()?, WM_SETICON, Some(WPARAM(ICON_BIG as usize)), Some(LPARAM(icon.0 as isize)));
+    }
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(Snip::default())
@@ -186,7 +203,13 @@ fn main() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![start_snip, frozen_image, finish_snip, check_update, install_update])
-        .setup(|_| {
+        .setup(|_app| {
+            #[cfg(windows)]
+            if let Some(window) = _app.get_webview_window("main") {
+                if let Err(e) = set_taskbar_icon(&window) {
+                    eprintln!("taskbar icon failed: {e}");
+                }
+            }
             // ponytail: a second instance fails to bind and its window talks to the first one's server.
             tauri::async_runtime::spawn(async {
                 if let Err(e) = capture_core::serve(capture_core::data_dir(), None).await {

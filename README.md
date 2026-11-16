@@ -39,6 +39,12 @@ MCP_URL=http://127.0.0.1:8787/mcp MCP_TOKEN=devtoken cargo run -p core --bin web
 
 http://127.0.0.1:47321 을 열고 이미지를 붙여 넣습니다. 웹 모드에는 단축키와 캡처 버튼이 없고 붙여넣기·끌어다 놓기만 됩니다. UI를 고치면서 보려면 `pnpm dev` 로 http://localhost:5173 을 엽니다(`/api` 는 47321로 프록시).
 
+## 아이콘과 테마
+
+앱·설치 파일·브라우저 아이콘과 할 일 완료 마크는 `ui/src/brand-geometry.ts`의 같은 벡터 모양을 사용합니다. 모양이나 브랜드 색상을 바꾼 뒤 `pnpm icons`를 실행하면 투명 SVG와 데스크톱용 PNG/ICO/ICNS가 함께 갱신됩니다. Node.js 22.18 이상이 필요합니다.
+
+설정의 **아펜도 라이트 / 아펜도 다크**는 보라색과 세이지 라임의 채도를 낮춘 테마입니다. 테마 팔레트와 완료 마크 색상은 `ui/src/theme.ts`에서 관리하며 기존 사용자 지정 색상은 유지합니다.
+
 ## Windows 개발·빌드
 
 Rust, Node.js, pnpm, [Tauri 2 사전 요구사항](https://v2.tauri.app/start/prerequisites/)(WebView2, MSVC 빌드 도구)이 필요합니다.

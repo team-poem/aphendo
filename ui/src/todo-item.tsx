@@ -1,7 +1,8 @@
 import { differenceInCalendarDays, format, parse, startOfToday } from "date-fns";
 import { ko } from "date-fns/locale";
-import { AlertTriangle, Check, Paperclip, Repeat as RepeatIcon } from "lucide-react";
+import { AlertTriangle, Paperclip, Repeat as RepeatIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { BrandMark, CompletionCheckbox } from "./brand-mark";
 import { REPEAT_LABEL, type Todo } from "./todo-detail";
 
 export const dueDate = (due: string) => parse(due, "yyyy-MM-dd", new Date());
@@ -50,9 +51,9 @@ export function TodoRow({ t, dense }: { t: Todo; dense?: boolean }) {
   const meta = dense ? t.priority > 0 || overdue : true;
   return (
     <li className={cn("flex items-start rounded-md hover:bg-white/[0.05]", dense ? "gap-1.5 px-1 py-0.5" : "gap-2.5 px-2 py-2")}>
-      <input
-        type="checkbox"
-        className={cn("shrink-0 cursor-pointer accent-orange-500", dense ? "mt-[3px] size-3.5" : "mt-1 size-4")}
+      <CompletionCheckbox
+        size={dense ? 16 : 20}
+        className="mt-0.5 shrink-0"
         aria-label={`${t.title} ${t.done ? "완료 해제" : "완료"}`}
         checked={t.done}
         onClick={(e) => e.stopPropagation()}
@@ -84,7 +85,7 @@ export function TodoRow({ t, dense }: { t: Todo; dense?: boolean }) {
           <span className={cn("flex flex-wrap items-center gap-x-2 gap-y-1 text-white/50", dense ? "mt-0.5" : "mt-1")}>
             {t.done && (
               <span className="inline-flex items-center gap-0.5 text-xs">
-                <Check size={12} aria-hidden />
+                <BrandMark size={14} />
                 완료
               </span>
             )}

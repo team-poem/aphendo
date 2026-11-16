@@ -4,7 +4,7 @@ import { API } from "./api";
 import { cn } from "@/lib/utils";
 import { useLayer } from "./layer";
 import { DiscardBar, useGuardedClose } from "./todo-detail";
-import { applyColors, checkContrast, COLOR_LABEL, colorsOf, PRESETS, saveTheme, type Colors, type Preset, type ThemeChoice } from "./theme";
+import { applyColors, checkContrast, COLOR_LABEL, colorsOf, completionColorsOf, PRESETS, saveTheme, type Colors, type Preset, type ThemeChoice } from "./theme";
 
 export type ConfigView = { has_token: boolean };
 type Probe = { status: "ok"; tools: string[] } | { status: "unauthorized" } | { status: "unreachable"; error: string };
@@ -86,14 +86,16 @@ function describe(p: Probe): Result {
 
 /** A preset as a tiny window: side, body and a card in its own colors. */
 function Swatch({ c }: { c: Colors }) {
+  const completion = completionColorsOf(c);
   return (
     <span className="flex h-12 w-full overflow-hidden rounded border border-black/10" aria-hidden>
       <span className="w-1/3" style={{ background: c.side }} />
       <span className="flex flex-1 flex-col gap-1 p-1.5" style={{ background: c.body }}>
         <span className="h-1.5 w-3/4 rounded-sm" style={{ background: c.text, opacity: 0.8 }} />
         <span className="flex h-4 items-center gap-1 rounded-sm px-1" style={{ background: c.card, boxShadow: "0 0 0 1px rgb(0 0 0 / 0.08)" }}>
-          <span className="size-2 rounded-full" style={{ background: c.accent }} />
+          <span className="size-2 rounded-[2px] border-2" style={{ background: completion.check, borderColor: completion.frame }} />
           <span className="h-1 flex-1 rounded-sm" style={{ background: c.text, opacity: 0.5 }} />
+          <span className="h-1 w-2 rounded-sm" style={{ background: c.accent }} />
         </span>
       </span>
     </span>
@@ -107,7 +109,8 @@ function ThemePicker({ value, onChange }: { value: ThemeChoice; onChange: (t: Th
   const { issues, fixed } = checkContrast(colors);
   return (
     <fieldset className="mb-4 border-b border-white/[0.08] pb-4">
-      <legend className="mb-2 text-sm font-semibold">화면 테마</legend>
+      <legend className="mb-1 text-sm font-semibold">화면 테마</legend>
+      <p className="mb-3 text-xs text-white/60">아펜도 테마는 차분한 보라색과 세이지 라임을 사용합니다.</p>
       <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
         {(Object.keys(PRESETS) as Preset[]).map((p) => (
           <button

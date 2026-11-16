@@ -3,6 +3,7 @@ import { ko } from "date-fns/locale";
 import { cn } from "@/lib/utils";
 import type { Todo } from "./todo-detail";
 import { actions, dueDate, isOverdue } from "./todo-item";
+import { BrandMark } from "./brand-mark";
 
 const day = (iso: string) => format(new Date(iso), "M/d (EEE)", { locale: ko });
 
@@ -12,8 +13,10 @@ function Node({ t, kids }: { t: Todo; kids: Map<string, Todo[]> }) {
     <li className="relative pl-6">
       <span
         aria-hidden
-        className={cn("absolute left-0 top-2 size-3 rounded-full border-2", t.done ? "border-orange-500 bg-orange-500" : isOverdue(t) ? "border-red-500 bg-popup" : "border-orange-500 bg-popup")}
-      />
+        className={cn("absolute left-0 top-2 flex size-3 items-center justify-center", !t.done && "rounded-full border-2 bg-popup", !t.done && (isOverdue(t) ? "border-red-500" : "border-orange-500"))}
+      >
+        {t.done && <BrandMark size={18} />}
+      </span>
       <button type="button" className="text-left text-[15px] leading-[1.5] text-white/90 hover:underline" onClick={() => actions.open(t.id)}>
         <span className={cn(t.done && "text-white/60 line-through")}>{t.title}</span>
       </button>

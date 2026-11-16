@@ -4,6 +4,7 @@ import { Maximize2, Plus, X } from "lucide-react";
 import { API, imageUrl } from "./api";
 import { cn } from "@/lib/utils";
 import { useLayer } from "./layer";
+import { BrandMark, CompletionCheckbox } from "./brand-mark";
 
 export type Todo = {
   id: string;
@@ -237,9 +238,8 @@ export function TodoDetail({
                 ))}
               </span>
               <label className={cn("flex items-center gap-1.5", isNew && "hidden")}>
-                <input
-                  type="checkbox"
-                  className="accent-orange-500"
+                <CompletionCheckbox
+                  size={20}
                   checked={form.done}
                   onChange={async (e) => {
                     if (!(e.target.checked && !todo.done && onFinish)) return setForm({ ...form, done: e.target.checked });
@@ -321,6 +321,7 @@ export function FinishTodo({ todo, captureIds, onClose, onChanged }: { todo: Tod
         }}
       >
         <div className="flex items-center gap-2 border-b border-white/[0.06] px-4 py-2.5">
+          <BrandMark size={20} />
           <h2 className="min-w-0 flex-1 truncate text-sm font-semibold" title={todo.title}>
             완료 · {todo.title}
           </h2>

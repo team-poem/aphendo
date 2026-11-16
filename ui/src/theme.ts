@@ -1,12 +1,11 @@
-// Six colors make a theme. The UI is written with white/N alpha utilities, so `text` drives every text and
-// line color, and `accent` replaces the orange scale everywhere it is used.
+// The existing utility names follow the chosen text and accent colors.
 export type Colors = { side: string; body: string; card: string; popup: string; text: string; accent: string };
 export type Preset = "black" | "white" | "bw" | "pastel" | "recommended";
 export type ThemeChoice = { preset: Preset; custom: Partial<Colors> };
 
 export const PRESETS: Record<Preset, { label: string; colors: Colors }> = {
-  black: { label: "블랙", colors: { side: "#17181b", body: "#1d1e22", card: "#25272c", popup: "#26282d", text: "#f1f1f3", accent: "#f97316" } },
-  white: { label: "화이트", colors: { side: "#f4f4f5", body: "#ffffff", card: "#ffffff", popup: "#ffffff", text: "#18181b", accent: "#ea580c" } },
+  black: { label: "아펜도 다크", colors: { side: "#191621", body: "#211e2a", card: "#2b2736", popup: "#302b3d", text: "#efedf5", accent: "#8064b0" } },
+  white: { label: "아펜도 라이트", colors: { side: "#eae6f0", body: "#f6f4f8", card: "#ffffff", popup: "#ffffff", text: "#302a3d", accent: "#7956a3" } },
   bw: { label: "블랙 & 화이트", colors: { side: "#18181b", body: "#ffffff", card: "#f6f6f7", popup: "#ffffff", text: "#18181b", accent: "#ea580c" } },
   pastel: { label: "파스텔", colors: { side: "#eceef8", body: "#fbf9f5", card: "#ffffff", popup: "#ffffff", text: "#2a2c40", accent: "#5f68c6" } },
   recommended: { label: "추천", colors: { side: "#e6eaf0", body: "#f3f5f8", card: "#ffffff", popup: "#ffffff", text: "#1b2a4a", accent: "#0b7f74" } },
@@ -15,6 +14,10 @@ export const PRESETS: Record<Preset, { label: string; colors: Colors }> = {
 export const COLOR_LABEL: Record<keyof Colors, string> = { side: "왼쪽 영역", body: "본문", card: "카드", popup: "팝업", text: "글자", accent: "강조색" };
 
 export const colorsOf = (t: ThemeChoice): Colors => ({ ...PRESETS[t.preset].colors, ...t.custom });
+
+export const completionColorsOf = (c: Colors) => luminance(c.body) > 0.4
+  ? { frame: "#7956a3", check: "#c5d8a4" }
+  : { frame: "#856ab6", check: "#d5e2b8" };
 
 export function readTheme(): ThemeChoice {
   try {
@@ -80,6 +83,7 @@ export function applyColors(c: Colors) {
   const light = luminance(c.body) > 0.4;
   const sideText = contrast(c.text, c.side) >= 4.5 ? c.text : inkFor(c.side);
   const sideLight = luminance(c.side) > 0.4;
+  const completion = completionColorsOf(c);
   const vars: Record<string, string> = {
     "--color-white": c.text,
     "--color-foreground": c.text,
@@ -88,6 +92,8 @@ export function applyColors(c: Colors) {
     "--color-popup": c.popup,
     "--color-side": c.side,
     "--side-text": sideText,
+    "--completion-frame": completion.frame,
+    "--completion-check": completion.check,
     "--color-orange-300": mix(c.accent, "#ffffff", 0.4),
     "--color-orange-400": mix(c.accent, "#ffffff", 0.2),
     "--color-orange-500": c.accent,

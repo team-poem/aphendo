@@ -5,6 +5,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Todo } from "./todo-detail";
 import { TodoRow } from "./todo-item";
+import { BrandMark } from "./brand-mark";
 
 /** Todos shown in a month cell before the rest collapse into "N개 더 보기". */
 const MONTH_ROWS = 3;
@@ -87,11 +88,15 @@ export function MonthGrid({ month, byDay, selected, onDay }: { month: Date; byDa
               key={key(day)}
               type="button"
               onClick={() => onDay(day)}
-              aria-label={`${format(day, "M월 d일", { locale: ko })} 할일 ${todos.length}개`}
+              aria-label={`${format(day, "M월 d일", { locale: ko })} 할일 ${todos.length}개${todos.length > 0 ? open > 0 ? ` · 미완료 ${open}개` : " · 모두 완료" : ""}`}
               className={cn("flex h-16 flex-col items-center gap-1 border-b border-r border-white/[0.06] pt-1.5", !isSameMonth(day, month) && "opacity-45")}
             >
               <span className={dayNum(day, selected)}>{format(day, "d")}</span>
-              {todos.length > 0 && <span className={cn("text-xs font-semibold tabular-nums", open ? "text-orange-300 light:text-orange-700" : "text-white/40")}>{open || "✓"}</span>}
+              {todos.length > 0 && (
+                <span className="inline-flex h-4 items-center text-xs font-semibold tabular-nums text-orange-300 light:text-orange-700">
+                  {open > 0 ? open : <BrandMark size={16} />}
+                </span>
+              )}
             </button>
           );
         })}

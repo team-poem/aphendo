@@ -2,11 +2,13 @@
 
 /* Defaults for the first paint; theme.ts overwrites them from the chosen theme before React renders. */
 @theme {
-  --color-background: #1d1e22;
-  --color-surface: #25272c;
-  --color-popup: #26282d;
-  --color-side: #17181b;
-  --color-foreground: #f1f1f3;
+  --color-background: #211e2a;
+  --color-surface: #2b2736;
+  --color-popup: #302b3d;
+  --color-side: #191621;
+  --color-foreground: #efedf5;
+  --color-white: #efedf5;
+  --color-orange-500: #8064b0;
   --color-primary: #fafafa;
   --color-primary-foreground: #0a0a0a;
   --color-secondary: #1a1a1a;
@@ -19,6 +21,8 @@
   --color-ring: var(--color-orange-500);
   --font-sans: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
 }
+
+:root { --completion-frame: #856ab6; --completion-check: #d5e2b8; }
 
 html, body, #root { height: 100%; }
 body { margin: 0; background: var(--color-background); color: var(--color-foreground); color-scheme: dark; }

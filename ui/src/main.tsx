@@ -4,6 +4,7 @@ import { addMonths, addWeeks, endOfDay, endOfMonth, endOfWeek, format, isSameMon
 import { ko } from "date-fns/locale";
 import { AlertTriangle, BarChart3, Camera, ChevronLeft, ChevronRight, Copy, Home, Images, List, Maximize2, Menu, Minus, NotebookPen, Plus, Settings as Gear, Shrink, X } from "lucide-react";
 import { API, imageUrl, type Capture } from "./api";
+import { BrandMark } from "./brand-mark";
 import { configured, fetchConfig, Settings, type ConfigView } from "./settings";
 import { MiniCalendar, MonthGrid, WeekBoard, workWeek } from "./calendar";
 import { DuplicateReview, type Pending } from "./duplicates";
@@ -943,7 +944,8 @@ function App() {
         <button className={cn(iconBtn, page === "home" ? "lg:hidden" : "md:hidden")} title="메뉴·달력·오늘 할 일 열기" aria-label="왼쪽 영역 열기" onClick={() => setSideOpen(true)}>
           <Menu size={18} />
         </button>
-        <h1 className="mr-1 text-sm font-semibold">
+        <h1 className="mr-1 flex items-center gap-1.5 text-sm font-semibold">
+          <BrandMark size={24} />
           Aphendo
           <AppVersion />
           {open.length > 0 && <span className="ml-1.5 rounded-full bg-orange-500 px-1.5 text-xs text-[#fff]">{open.length}</span>}
