@@ -21,6 +21,8 @@ jobs:
     runs-on: ${{ inputs.runner }}
     permissions:
       contents: write
+    env:
+      TAURI_SIGNING_PUBLIC_KEY: ${{ vars.TAURI_SIGNING_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,15 +36,25 @@ jobs:
         with:
           node-version: 22
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-
       - name: Check tag matches app version
         env:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           node -e "const v = require('./src-tauri/tauri.conf.json').version; if (process.env.RELEASE_TAG !== 'v' + v) { console.error('Select the tag matching app version v' + v); process.exit(1); }"
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm test:release
+
+      - name: Verify existing updater key before building
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: node scripts/release-signing.mjs preflight
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
 
       - name: Install Windows cross-compilation tools
         if: inputs.runner == 'ubuntu-24.04'
@@ -51,21 +63,26 @@ jobs:
           sudo apt-get install -y nsis lld llvm clang
           cargo install --locked cargo-xwin
 
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm test
-
-      - name: Build and prepare draft release
-        uses: tauri-apps/tauri-action@v1
+      - name: Build signed Windows installer
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           XWIN_ACCEPT_LICENSE: '1'
-        with:
-          tagName: ${{ inputs.tag }}
-          releaseName: ${{ inputs.tag }}
-          releaseBody: ${{ inputs.tag == 'v0.2.17' && '프로그램 아이콘을 새 이미지로 교체했습니다. 업데이트 서명 키가 변경되어 기존 버전 사용자는 이 릴리즈의 설치 파일을 직접 내려받아 한 번 설치해야 합니다.' || '변경 사항은 커밋 내역을 확인해 주세요.' }}
-          releaseDraft: true
-          prerelease: false
-          updaterJsonPreferNsis: true
-          args: --target x86_64-pc-windows-msvc --bundles nsis ${{ inputs.runner == 'ubuntu-24.04' && '--runner cargo-xwin' || '' }} -- --locked
+        run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis ${{ inputs.runner == 'ubuntu-24.04' && '--runner cargo-xwin' || '' }} -- --locked
+
+      - name: Verify installer signature and prepare update manifest
+        shell: bash
+        run: |
+          aphendo_version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          node scripts/release-signing.mjs prepare "target/x86_64-pc-windows-msvc/release/bundle/nsis/Aphendo_${aphendo_version}_x64-setup.exe"
+
+      - name: Upload verified assets as a draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          aphendo_version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          dir=target/x86_64-pc-windows-msvc/release/bundle/nsis
+          exe="Aphendo_${aphendo_version}_x64-setup.exe"
+          gh release create "$RELEASE_TAG" "$dir/$exe" "$dir/$exe.sig" "$dir/latest.json" --verify-tag --draft --title "$RELEASE_TAG" --notes "변경 사항은 커밋 내역을 확인해 주세요."

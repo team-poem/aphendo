@@ -6,7 +6,8 @@
     "dev": "vite ui",
     "build": "tsc -p ui && vite build ui",
     "tauri": "tauri",
-    "test": "node ui/src/crop.test.ts"
+    "test": "node ui/src/crop.test.ts",
+    "test:release": "node --test scripts/release-signing.test.mjs"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

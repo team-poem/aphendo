@@ -71,26 +71,39 @@ pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles n
 `src-tauri/tauri.conf.json`의 버전을 올리고 같은 버전의 태그를 푸시한 뒤, 해당 태그를 지정해 원격 빌드를 시작합니다.
 
 ```sh
-gh workflow run release.yml --ref main -f tag=v0.2.17
+gh workflow run release.yml --ref main -f tag=v0.2.18
 ```
 
 Windows 실행기 배정이 오래 걸리면 Linux에서 Windows 설치 파일을 교차 빌드할 수 있습니다.
 
 ```sh
-gh workflow run release.yml --ref main -f tag=v0.2.17 -f runner=ubuntu-24.04
+gh workflow run release.yml --ref main -f tag=v0.2.18 -f runner=ubuntu-24.04
 ```
 
-워크플로는 지정한 태그의 소스를 확인한 뒤 테스트하고, 서명된 Windows 설치 파일과 `latest.json`을 포함한 초안 릴리즈를 만듭니다. GitHub에서 설치 파일과 업데이트 정보를 확인한 뒤 초안을 게시합니다. 태그와 앱 버전이 다르면 빌드가 중단됩니다. 기존 로컬 릴리즈 스크립트와 동시에 배포하지 않도록 태그 푸시만으로는 워크플로가 자동 실행되지 않습니다.
+워크플로는 지정한 태그의 소스를 확인한 뒤 테스트하고, 기존 키로 서명된 Windows 설치 파일과 `latest.json`을 포함한 초안 릴리즈를 만듭니다. GitHub에서 설치 파일과 업데이트 정보를 확인한 뒤 초안을 게시합니다. 태그와 앱 버전이 다르거나 서명 검증에 실패하면 업로드 전에 중단됩니다. 아래 검증 스크립트가 포함된 태그부터 실행할 수 있습니다. 기존 로컬 릴리즈 스크립트와 동시에 배포하지 않도록 태그 푸시만으로는 워크플로가 자동 실행되지 않습니다.
 
-자동 빌드에는 저장소의 Actions secret `TAURI_SIGNING_PRIVATE_KEY`에 업데이트 서명 비밀 키 내용이 필요합니다. 로컬 키는 `~/.tauri/aphendo.key`에 보관하고 별도로 백업합니다. 이 키를 잃으면 기존 설치본에 서명된 업데이트를 제공할 수 없습니다. v0.2.17에서 서명 키가 바뀌었으므로 이전 버전 사용자는 해당 설치 파일을 직접 내려받아 한 번 설치해야 합니다.
+**v0.2.17부터 사용 중인 서명 키를 계속 유지합니다.** 키가 없거나 맞지 않으면 기존 백업을 복구하며, 일반 릴리즈를 위해 새 키를 발급하거나 공개키를 교체하지 않습니다. v0.2.16 이하 사용자는 v0.2.17을 한 번 직접 설치해야 하지만, 이후 버전에는 같은 키를 사용합니다.
+
+- GitHub Actions secret `TAURI_SIGNING_PRIVATE_KEY`: 현재 비밀키. 암호가 있는 키는 secret `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`도 설정합니다.
+- GitHub Actions variable `TAURI_SIGNING_PUBLIC_KEY`: v0.2.17에서 사용하는 공개키. 저장소의 `scripts/updater-public-key.pub`와 동일하게 유지합니다.
+- 로컬 비밀키: `~/.tauri/aphendo.key` 또는 `APHENDO_SIGNING_KEY`로 지정한 파일. Git이나 릴리즈에 올리지 않습니다.
+
+`scripts/release-signing.mjs preflight`는 앱 공개키가 고정된 키와 같은지 확인하고, 비밀키로 임시 데이터를 서명한 뒤 공개키로 검증합니다. 빌드 후에는 실제 설치 파일의 서명과 서명된 버전을 검증한 경우에만 `latest.json`을 만들고 업로드합니다. 비어 있는 키, 다른 키, 변조된 파일, 버전 불일치는 모두 배포를 중단시킵니다.
+
+GitHub secret은 설정 후 원문을 다시 내려받을 수 없으므로 **원본 비밀키의 암호화된 별도 백업**을 릴리즈 담당자가 보관해야 합니다. 컴퓨터를 바꿀 때는 새 키를 만들지 말고 기존 키를 복구한 뒤 다음 검사를 통과시킵니다. 일반 앱 사용자에게 비밀키를 전달하지 않습니다.
+
+```sh
+node scripts/release-signing.mjs preflight
+pnpm test:release
+```
 
 macOS에서 직접 빌드하고 게시하는 기존 스크립트도 사용할 수 있습니다.
 
 ```sh
-scripts/release.sh 0.2.1 "바뀐 점 한 줄"
+scripts/release.sh 0.2.18 "바뀐 점 한 줄"
 ```
 
-이 스크립트는 버전을 올려 서명된 설치 파일을 빌드하고, 커밋과 태그를 푸시한 뒤 릴리즈를 바로 게시합니다.
+이 스크립트도 기존 키 검증 후 버전을 올려 빌드하고, 설치 파일 서명 검증을 통과한 경우에만 커밋과 태그를 푸시한 뒤 릴리즈를 게시합니다. 키 분실 자체를 검증 절차로 복구할 수는 없으므로 백업을 유지해야 합니다.
 
 ## 동작 메모
 
