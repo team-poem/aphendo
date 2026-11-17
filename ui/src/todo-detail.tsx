@@ -71,6 +71,7 @@ export function TodoDetail({
   onFinish,
   onDraft,
   onOpenCapture,
+  parent,
 }: {
   todo: Todo;
   /** Evidence to show beside the form, first one largest. */
@@ -83,6 +84,8 @@ export function TodoDetail({
   /** Hands the filled-in form back instead of saving it. */
   onDraft?: (d: TodoDraft) => void;
   onOpenCapture?: (id: string) => void;
+  /** The todo whose completion added this one, when it still exists. */
+  parent?: Todo;
 }) {
   const [initial] = useState(() => ({ ...todo, due: todo.due ?? "" }));
   const [form, setForm] = useState(initial);
@@ -179,6 +182,11 @@ export function TodoDetail({
           )}
 
           <div className={cn("space-y-3 p-4", imageUrlOf && "md:w-1/2")}>
+            {parent && (
+              <p className="break-words text-xs text-white/50">
+                이전 할일 · <span className="text-white/80">{parent.title}</span>
+              </p>
+            )}
             {FIELDS.map(({ key, label, long }) => (
               <label key={key} className="block text-xs text-white/50">
                 {label}

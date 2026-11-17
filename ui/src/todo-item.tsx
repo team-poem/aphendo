@@ -21,6 +21,7 @@ export const actions = {
   open: (_id: string) => {},
   hover: (_t: Todo, _el: HTMLElement) => {},
   leave: () => {},
+  parentOf: (_t: Todo): Todo | undefined => undefined,
 };
 
 // D-3 before, D-day on, D+2 after the due date. Past due also says so in words and with an icon.
@@ -48,6 +49,7 @@ const Stars = ({ n }: { n: number }) => (
 export function TodoRow({ t, dense }: { t: Todo; dense?: boolean }) {
   const overdue = isOverdue(t);
   const n = evidenceOf(t).length;
+  const parent = dense ? undefined : actions.parentOf(t);
   const meta = dense ? t.priority > 0 || overdue : true;
   return (
     <li className={cn("flex items-start rounded-md hover:bg-white/[0.05]", dense ? "gap-1.5 px-1 py-0.5" : "gap-2.5 px-2 py-2")}>
@@ -81,6 +83,7 @@ export function TodoRow({ t, dense }: { t: Todo; dense?: boolean }) {
         >
           {t.title}
         </span>
+        {parent && <span className="mt-0.5 block truncate text-xs text-white/50">이전 할일 · {parent.title}</span>}
         {meta && (
           <span className={cn("flex flex-wrap items-center gap-x-2 gap-y-1 text-white/50", dense ? "mt-0.5" : "mt-1")}>
             {t.done && (

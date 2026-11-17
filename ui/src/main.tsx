@@ -682,6 +682,7 @@ function App() {
   const [editing, setEditing] = useState<string | null>(null);
   const [adding, setAdding] = useState<Date | null>(null);
   actions.open = setEditing;
+  actions.parentOf = (t) => (t.parent_id ? state.todos.find((p) => p.id === t.parent_id) : undefined);
   const [finishing, setFinishing] = useState<Todo | null>(null);
   finishTodo = setFinishing;
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -825,7 +826,7 @@ function App() {
         : `${format(week[0], "yyyy년 M월 d일")} – ${format(week[4], "M월 d일")}`;
 
   const detail = edited && (
-    <TodoDetail key={edited.id} todo={edited} captureIds={liveCaptures(edited)} onClose={() => setEditing(null)} onChanged={refresh} onReopen={showReopened} onFinish={setFinishing} onOpenCapture={setEnlarged} />
+    <TodoDetail key={edited.id} todo={edited} captureIds={liveCaptures(edited)} onClose={() => setEditing(null)} onChanged={refresh} onReopen={showReopened} onFinish={setFinishing} onOpenCapture={setEnlarged} parent={actions.parentOf(edited)} />
   );
   const confirmUpload = staged && <ConfirmUpload images={staged} onClose={() => setStaged(null)} />;
   const finish = finishing && <FinishTodo key={finishing.id} todo={finishing} captureIds={liveCaptures(finishing)} onClose={() => setFinishing(null)} onChanged={refresh} />;
