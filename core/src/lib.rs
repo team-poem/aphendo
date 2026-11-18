@@ -1,6 +1,9 @@
 pub mod remote;
 pub mod store;
 
+#[cfg(test)]
+mod trash_api_tests;
+
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
@@ -50,6 +53,9 @@ pub fn router(dir: PathBuf) -> std::io::Result<Router> {
         .allow_headers([header::CONTENT_TYPE]);
     Ok(Router::new()
         .route("/api/state", get(get_state))
+        .route("/api/trash", get(get_trash))
+        .route("/api/trash/restore", post(restore_trash))
+        .route("/api/trash/purge", post(purge_trash))
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/config/test", post(test_config))
         .route("/api/captures", post(post_capture))
@@ -88,6 +94,36 @@ async fn get_state(State(app): State<App>) -> Json<store::Data> {
     Json(app.store.snapshot())
 }
 
+async fn get_trash(State(app): State<App>) -> Json<Vec<store::TrashItem>> {
+    Json(app.store.trash_items())
+}
+
+#[derive(Deserialize)]
+struct TrashSelection {
+    ids: Vec<String>,
+    #[serde(default)]
+    confirm: bool,
+}
+
+async fn restore_trash(State(app): State<App>, Json(selection): Json<TrashSelection>) -> ApiResult {
+    let count = app.store.restore_trash(&selection.ids).map_err(internal)?;
+    Ok(Json(serde_json::json!({ "count": count })).into_response())
+}
+
+async fn purge_trash(State(app): State<App>, Json(selection): Json<TrashSelection>) -> ApiResult {
+    if !selection.confirm {
+        return Err((StatusCode::BAD_REQUEST, "영구 삭제 확인이 필요합니다".into()));
+    }
+    let count = app.store.purge_trash(&selection.ids).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::InvalidInput {
+            (StatusCode::CONFLICT, e.to_string())
+        } else {
+            internal(e)
+        }
+    })?;
+    Ok(Json(serde_json::json!({ "count": count })).into_response())
+}
+
 async fn post_capture(State(app): State<App>, headers: HeaderMap, body: Bytes) -> ApiResult {
     let ext = match headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()) {
         Some("image/png") => "png",
@@ -107,12 +143,12 @@ async fn post_capture(State(app): State<App>, headers: HeaderMap, body: Bytes) -
 
 /// The file name comes from the store (server-generated), never from the request.
 async fn capture_image(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
-    let Some(image) = app.store.snapshot().captures.into_iter().find(|c| c.id == id).map(|c| c.image) else {
+    let Some(image) = app.store.capture_image(&id) else {
         return Err((StatusCode::NOT_FOUND, "없는 캡처".into()));
     };
     let bytes = tokio::fs::read(app.dir.join("images").join(&image)).await.map_err(internal)?;
-    // Stored images never change, so the gallery's re-renders hit the cache.
-    let cache = (header::CACHE_CONTROL, "max-age=31536000, immutable");
+    // Evidence can be permanently deleted: do not retain a year-long browser copy.
+    let cache = (header::CACHE_CONTROL, "no-store");
     Ok(([(header::CONTENT_TYPE, mime_for(&image)), cache], bytes).into_response())
 }
 
@@ -128,12 +164,8 @@ async fn retry_capture(State(app): State<App>, Path(id): Path<String>) -> ApiRes
 
 async fn delete_capture(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
     match app.store.delete_capture(&id).map_err(internal)? {
-        Some(image) => {
-            // The record is gone either way; a leftover file only costs disk.
-            let _ = tokio::fs::remove_file(app.dir.join("images").join(image)).await;
-            Ok(StatusCode::NO_CONTENT.into_response())
-        }
-        None => Err((StatusCode::CONFLICT, "없거나 분석 중인 캡처는 지울 수 없음".into())),
+        true => Ok(StatusCode::NO_CONTENT.into_response()),
+        false => Err((StatusCode::CONFLICT, "없거나 분석 중인 캡처는 지울 수 없음".into())),
     }
 }
 

@@ -2,8 +2,9 @@ import { StrictMode, useEffect, useMemo, useRef, useState, type MouseEvent, type
 import { createRoot } from "react-dom/client";
 import { addMonths, addWeeks, endOfDay, endOfMonth, endOfWeek, format, isSameMonth, isToday, isWithinInterval, startOfDay, startOfMonth, startOfToday, startOfWeek } from "date-fns";
 import { ko } from "date-fns/locale";
-import { AlertTriangle, BarChart3, Camera, ChevronLeft, ChevronRight, Copy, Home, Images, List, Maximize2, Menu, Minus, NotebookPen, Plus, Settings as Gear, Shrink, X } from "lucide-react";
-import { API, imageUrl, type Capture } from "./api";
+import { AlertTriangle, BarChart3, Camera, ChevronLeft, ChevronRight, Copy, Home, Images, List, Maximize2, Menu, Minus, NotebookPen, Plus, Settings as Gear, Shrink, Trash2, X } from "lucide-react";
+import { API, imageUrl, type Capture, type TrashItem, type TrashHistory } from "./api";
+import { Trash } from "./trash";
 import { BrandMark } from "./brand-mark";
 import { configured, fetchConfig, Settings, type ConfigView } from "./settings";
 import { MiniCalendar, MonthGrid, WeekBoard, workWeek } from "./calendar";
@@ -18,7 +19,7 @@ import { cn } from "@/lib/utils";
 import { FinishTodo, TodoDetail, type Todo } from "./todo-detail";
 
 type CallNote = { id: string; who: string; memo: string; created_at: string };
-type State = { captures: Capture[]; todos: Todo[]; calls?: CallNote[]; pending?: Pending[]; reports?: Report[] };
+type State = { captures: Capture[]; todos: Todo[]; calls?: CallNote[]; pending?: Pending[]; reports?: Report[]; evidence_captures?: Capture[]; history?: TrashHistory[] };
 type Page = "home" | "stats" | "weekly";
 
 declare global {
@@ -83,11 +84,17 @@ const dragWindow = (e: MouseEvent) => {
 const doneDay = (t: Todo) => (t.done_at ? new Date(t.done_at) : t.due ? dueDate(t.due) : new Date(t.created_at));
 
 let setMsg: (m: string) => void = () => {};
+let notifyTrashed: (id: string) => void = () => {};
 
 async function call(path: string, init: RequestInit) {
   const r = await fetch(`${API}${path}`, init).catch(() => null);
-  if (!r?.ok) setMsg(r ? await r.text() : "로컬 서버에 연결할 수 없습니다.");
+  if (!r?.ok) {
+    setMsg(r ? await r.text() : "로컬 서버에 연결할 수 없습니다.");
+    return false;
+  }
+  if (init.method === "DELETE") notifyTrashed(path.split("/").at(-1)!);
   refresh();
+  return true;
 }
 
 let refresh: () => void = () => {};
@@ -263,7 +270,7 @@ function CallNotes({ calls }: { calls: CallNote[] }) {
       </form>
       {calls.length ? (
         <ul className="space-y-1">
-          {[...calls].reverse().map((c) => (
+          {[...calls].sort((a, b) => b.created_at.localeCompare(a.created_at)).map((c) => (
             <li key={c.id} className="group flex items-start gap-2 rounded-sm px-2 py-1.5 hover:bg-white/[0.03]">
               <div className="min-w-0 flex-1 text-sm">
                 <div className="flex items-baseline gap-2">
@@ -293,7 +300,7 @@ function CaptureList({ captures, onView, onClose }: { captures: Capture[]; onVie
         <p className="mb-3 text-sm text-white/55">{CAPTURE_HINT}</p>
         {captures.length ? (
           <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {[...captures].reverse().map((c) => (
+            {[...captures].sort((a, b) => b.created_at.localeCompare(a.created_at)).map((c) => (
               <li key={c.id}>
                 <button type="button" onClick={() => onView(c.id)} className="group relative block aspect-[4/3] w-full overflow-hidden rounded-md border border-white/[0.1] bg-white/[0.03] hover:border-orange-500/60" title="크게 보기">
                   <img src={imageUrl(c.id)} alt={`${format(new Date(c.created_at), "M/d HH:mm")} 캡처`} className="h-full w-full object-cover object-top" onError={(e) => e.currentTarget.remove()} />
@@ -331,7 +338,7 @@ function CaptureView({ c, todos, onClose }: { c: Capture; todos: Todo[]; onClose
         {finished && (
           <button
             className="rounded-sm border border-white/[0.1] px-2 py-1 text-xs text-white/70 hover:bg-white/10 hover:text-white"
-            title="이 캡처에서 할일을 다시 뽑습니다. 지운 할일도 다시 생깁니다."
+            title="이 캡처에서 할일을 다시 뽑습니다. 휴지통에 있는 할일은 다시 생성하지 않습니다."
             onClick={() => call(`/api/captures/${c.id}/retry`, { method: "POST" })}
           >
             다시 분석
@@ -340,11 +347,11 @@ function CaptureView({ c, todos, onClose }: { c: Capture; todos: Todo[]; onClose
         {finished && (
           <button
             className={cn("rounded-sm border px-2 py-1 text-xs", sure ? "border-red-500/60 bg-red-500/15 text-red-300 light:text-red-700" : "border-white/[0.1] text-white/70 hover:bg-red-500/10 hover:text-red-300")}
-            title="캡처 이미지를 지웁니다. 여기서 나온 할일은 남습니다."
+            title="캡처를 휴지통으로 옮깁니다. 연결된 할일과 공유 근거는 유지됩니다."
             onBlur={() => setSure(false)}
-            onClick={() => (sure ? call(`/api/captures/${c.id}`, { method: "DELETE" }).then(onClose) : setSure(true))}
+            onClick={() => (sure ? call(`/api/captures/${c.id}`, { method: "DELETE" }).then((ok) => { if (ok) onClose(); }) : setSure(true))}
           >
-            {sure ? "정말 삭제" : "이미지 삭제"}
+            {sure ? "휴지통으로 이동" : "이미지 삭제"}
           </button>
         )}
         <button className="rounded p-1 text-white/60 hover:bg-white/10 hover:text-white" title="닫기 (Esc)" aria-label="닫기" onClick={onClose}>
@@ -648,6 +655,76 @@ function App() {
   const [state, setState] = useState<State>({ captures: [], todos: [] });
   const [msg, setMsgState] = useState("");
   setMsg = setMsgState;
+  const errorToast = msg && (
+    <div role="alert" className="absolute bottom-3 left-1/2 z-50 flex max-w-[90%] -translate-x-1/2 items-start gap-2 rounded-md border border-red-500/40 bg-popup px-3 py-2 text-sm text-red-300 shadow-xl light:text-red-700">
+      <span className="break-words">{msg}</span>
+      <button className="shrink-0 rounded p-0.5 hover:bg-white/10" aria-label="알림 닫기" onClick={() => setMsgState("")}><X size={14} /></button>
+    </div>
+  );
+  const [trashed, setTrashed] = useState<{ ids: string[]; stamp: number } | null>(null);
+  const [undoing, setUndoing] = useState(false);
+  notifyTrashed = (id) => {
+    setMsgState("");
+    setTrashed((old) => ({ ids: [...new Set([...(old?.ids ?? []), id])], stamp: Date.now() }));
+  };
+  useEffect(() => {
+    if (!trashed) return;
+    const timer = window.setTimeout(() => setTrashed(null), 10000);
+    return () => window.clearTimeout(timer);
+  }, [trashed]);
+  const [trashOpen, setTrashOpen] = useState(false);
+  const [trashItems, setTrashItems] = useState<TrashItem[]>([]);
+  const [trashLoading, setTrashLoading] = useState(false);
+  const loadTrash = async () => {
+    const r = await fetch(`${API}/api/trash`);
+    if (!r.ok) throw new Error(await r.text());
+    setTrashItems(await r.json());
+  };
+  const openTrash = async () => {
+    setTrashLoading(true);
+    try {
+      await loadTrash();
+      setTrashOpen(true);
+    } catch (e) {
+      setMsgState(`휴지통을 불러오지 못했습니다: ${e}`);
+    } finally {
+      setTrashLoading(false);
+    }
+  };
+  const changeTrash = async (action: "restore" | "purge", ids: string[]) => {
+    const r = await fetch(`${API}/api/trash/${action}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, ...(action === "purge" && { confirm: true }) }),
+    });
+    if (!r.ok) {
+      const message = await r.text();
+      // A failed file cleanup can follow a committed permanent deletion.
+      refresh();
+      if (trashOpen) await loadTrash().catch(() => {});
+      throw new Error(message);
+    }
+    setTrashed((old) => {
+      if (!old) return null;
+      const remaining = old.ids.filter((id) => !ids.includes(id));
+      return remaining.length ? { ...old, ids: remaining } : null;
+    });
+    setTrashItems((old) => old.filter((item) => !ids.includes(item.id)));
+    refresh();
+    if (trashOpen) await loadTrash().catch(() => setMsgState("처리는 완료했지만 휴지통 목록을 새로 불러오지 못했습니다. 다시 열어 확인해 주세요."));
+  };
+  const undoToast = trashed && (
+    <div role="status" className="absolute bottom-14 left-1/2 z-50 flex w-max max-w-[94%] -translate-x-1/2 flex-wrap items-center gap-3 rounded-md border border-white/[0.15] bg-popup px-4 py-3 text-sm shadow-xl">
+      <span>휴지통으로 이동했습니다.{trashed.ids.length > 1 ? ` (${trashed.ids.length}개)` : ""}</span>
+      <button type="button" disabled={undoing} className="font-medium text-orange-400 underline disabled:opacity-50" onClick={async () => {
+        setUndoing(true);
+        try { await changeTrash("restore", trashed.ids); }
+        catch (e) { setMsgState(`복구하지 못했습니다: ${e}`); }
+        finally { setUndoing(false); }
+      }}>{undoing ? "복구 중…" : "되돌리기"}</button>
+      <button type="button" aria-label="삭제 안내 닫기" onClick={() => setTrashed(null)}><X size={16} /></button>
+    </div>
+  );
   const [view, setView] = useState<"month" | "week">("month");
   // The day the main view is built around; month view shows its month, week view its Monday–Friday.
   const [cursor, setCursor] = useState(startOfToday);
@@ -774,7 +851,7 @@ function App() {
   }, []);
 
   const pending = state.pending ?? [];
-  const busy = !!(editing || adding || finishing || settingsOpen || staged || dayOpen || capturesOpen || viewing || enlarged || drawer || sideOpen);
+  const busy = !!(editing || adding || finishing || settingsOpen || staged || dayOpen || capturesOpen || viewing || enlarged || drawer || sideOpen || trashOpen);
   // New look-alikes open the check by themselves, unless the user is in the middle of another popup.
   const seenPending = useRef(0);
   useEffect(() => {
@@ -798,8 +875,9 @@ function App() {
   const doneToday = state.todos.filter((t) => t.done && isToday(doneDay(t))).length;
   const edited = editing ? state.todos.find((t) => t.id === editing) : undefined;
   const view_ = viewing ? state.captures.find((c) => c.id === viewing) : undefined;
-  const big = enlarged ? state.captures.find((c) => c.id === enlarged) : undefined;
-  const liveCaptures = (t: Todo) => evidenceOf(t).filter((id) => state.captures.some((c) => c.id === id));
+  const evidenceCaptures = [...state.captures, ...(state.evidence_captures ?? [])];
+  const big = enlarged ? evidenceCaptures.find((c) => c.id === enlarged) : undefined;
+  const liveCaptures = (t: Todo) => evidenceOf(t).filter((id) => evidenceCaptures.some((c) => c.id === id));
 
   const step = (n: number) => setCursor(view === "month" ? addMonths(startOfMonth(cursor), n) : addWeeks(cursor, n));
   const goToday = () => {
@@ -825,7 +903,7 @@ function App() {
         : `${format(week[0], "yyyy년 M월 d일")} – ${format(week[4], "M월 d일")}`;
 
   const detail = edited && (
-    <TodoDetail key={edited.id} todo={edited} captureIds={liveCaptures(edited)} onClose={() => setEditing(null)} onChanged={refresh} onReopen={showReopened} onFinish={setFinishing} onOpenCapture={setEnlarged} />
+    <TodoDetail key={edited.id} todo={edited} captureIds={liveCaptures(edited)} onClose={() => setEditing(null)} onChanged={refresh} onReopen={showReopened} onFinish={setFinishing} onOpenCapture={setEnlarged} onDeleted={notifyTrashed} history={state.history?.filter((h) => h.entity_id === edited.id)} />
   );
   const confirmUpload = staged && <ConfirmUpload images={staged} onClose={() => setStaged(null)} />;
   const finish = finishing && <FinishTodo key={finishing.id} todo={finishing} captureIds={liveCaptures(finishing)} onClose={() => setFinishing(null)} onChanged={refresh} />;
@@ -833,7 +911,7 @@ function App() {
     <EvidenceCard
       todo={state.todos.find((t) => t.id === peek.t.id) ?? peek.t}
       source={peek.el}
-      captures={state.captures}
+      captures={evidenceCaptures}
       onKeep={keep}
       onLeave={hide}
       onClose={() => setPeek(null)}
@@ -854,6 +932,8 @@ function App() {
         {finish}
         {enlargedView}
         {evidence}
+        {undoToast}
+        {errorToast}
       </div>
     );
 
@@ -865,13 +945,14 @@ function App() {
           ["목록", List, drawer, () => setDrawer(!drawer)],
           ["통계", BarChart3, page === "stats", () => setPage("stats")],
           ["주간업무", NotebookPen, page === "weekly", () => setPage("weekly")],
+          [trashLoading ? "불러오는 중" : "휴지통", Trash2, trashOpen, () => { if (!trashLoading) void openTrash(); }],
           ["환경설정", Gear, settingsOpen, () => setSettingsOpen(true)],
         ] as const
       ).map(([label, Icon, active, go]) => (
         <button
           key={label}
           type="button"
-          aria-current={active && label !== "목록" && label !== "환경설정" ? "page" : undefined}
+          aria-current={active && (label === "홈" || label === "통계" || label === "주간업무") ? "page" : undefined}
           aria-pressed={label === "목록" ? drawer : undefined}
           onClick={() => {
             go();
@@ -1067,7 +1148,7 @@ function App() {
         />
       )}
       {confirmUpload}
-      {reviewOpen && <DuplicateReview pending={pending} todos={state.todos} captures={state.captures} onClose={() => setReviewOpen(false)} onChanged={refresh} onOpenCapture={setEnlarged} />}
+      {reviewOpen && <DuplicateReview pending={pending} todos={state.todos} captures={evidenceCaptures} onClose={() => setReviewOpen(false)} onChanged={refresh} onOpenCapture={setEnlarged} />}
       {adding && (
         <TodoDetail
           todo={{ id: "", capture_id: "", title: "", due: format(adding, "yyyy-MM-dd"), sender: null, method: null, contact: null, detail: null, done: false, done_at: null, done_note: null, priority: 0, repeat: null, created_at: "" }}
@@ -1082,14 +1163,9 @@ function App() {
       {settingsOpen && <Settings config={config} theme={theme} onTheme={setTheme} onClose={() => setSettingsOpen(false)} onSaved={setConfig} />}
       {enlargedView}
       {evidence}
-      {msg && (
-        <div role="alert" className="absolute bottom-3 left-1/2 z-50 flex max-w-[90%] -translate-x-1/2 items-start gap-2 rounded-md border border-red-500/40 bg-popup px-3 py-2 text-sm text-red-300 shadow-xl light:text-red-700">
-          <span className="break-words">{msg}</span>
-          <button className="shrink-0 rounded p-0.5 hover:bg-white/10" aria-label="알림 닫기" onClick={() => setMsgState("")}>
-            <X size={14} />
-          </button>
-        </div>
-      )}
+      {trashOpen && <Trash items={trashItems} onRestore={(ids) => changeTrash("restore", ids)} onPurge={(ids) => changeTrash("purge", ids)} onClose={() => setTrashOpen(false)} />}
+      {undoToast}
+      {errorToast}
       {dragging && (
         <div className="pointer-events-none absolute inset-2 z-50 flex items-center justify-center rounded-md border-2 border-dashed border-orange-500/60 bg-orange-500/[0.06] text-sm text-orange-300 light:text-orange-700">
           여기에 놓으면 분석합니다

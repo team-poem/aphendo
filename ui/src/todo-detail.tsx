@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { format } from "date-fns";
 import { Maximize2, Plus, X } from "lucide-react";
-import { API, imageUrl } from "./api";
+import { API, imageUrl, type TrashHistory } from "./api";
 import { cn } from "@/lib/utils";
 import { useLayer } from "./layer";
 import { BrandMark, CompletionCheckbox } from "./brand-mark";
@@ -71,6 +71,8 @@ export function TodoDetail({
   onFinish,
   onDraft,
   onOpenCapture,
+  onDeleted,
+  history = [],
 }: {
   todo: Todo;
   /** Evidence to show beside the form, first one largest. */
@@ -83,6 +85,8 @@ export function TodoDetail({
   /** Hands the filled-in form back instead of saving it. */
   onDraft?: (d: TodoDraft) => void;
   onOpenCapture?: (id: string) => void;
+  onDeleted?: (id: string) => void;
+  history?: TrashHistory[];
 }) {
   const [initial] = useState(() => ({ ...todo, due: todo.due ?? "" }));
   const [form, setForm] = useState(initial);
@@ -98,7 +102,8 @@ export function TodoDetail({
     const r = await fetch(`${API}/api/todos${isNew ? "" : `/${todo.id}`}`, init).catch(() => null);
     onChanged();
     if (r?.ok) {
-      if (todo.done && !form.done) onReopen(form.due || null);
+      if (init.method === "DELETE") onDeleted?.(todo.id);
+      else if (todo.done && !form.done) onReopen(form.due || null);
       onClose();
       return true;
     }
@@ -257,12 +262,24 @@ export function TodoDetail({
               </div>
             )}
 
+            {history.length > 0 && (
+              <details className="rounded-md border border-white/[0.1] p-2.5 text-sm">
+                <summary className="cursor-pointer text-white/70">삭제·복구 이력 ({history.length})</summary>
+                <ol className="mt-2 space-y-2 text-xs leading-relaxed text-white/60">
+                  {history.map((h, i) => <li key={`${h.at}-${i}`}>
+                    <time dateTime={h.at}>{new Date(h.at).toLocaleString("ko-KR")}</time>
+                    {` · ${h.action === "deleted" ? "휴지통으로 이동" : "복구"} · ${h.actor === "local" ? "이 기기 사용자" : h.actor}`}
+                  </li>)}
+                </ol>
+              </details>
+            )}
+
             {error && <p className="break-words text-xs text-red-300 light:text-red-700">{error}</p>}
 
             <div className="flex gap-2 pt-1">
               {!isNew && (
                 <button type="button" className={cn(btn, "text-red-300 hover:bg-red-500/10 light:text-red-700")} onClick={() => send({ method: "DELETE" })}>
-                  삭제
+                  휴지통으로 이동
                 </button>
               )}
               <span className="flex-1" />
