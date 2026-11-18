@@ -1,6 +1,7 @@
 use crate::remote::{ExtractedTodo, ReportItem};
 use chrono::{DateTime, Days, Local, Months, NaiveDate, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -163,6 +164,78 @@ pub struct Data {
     pub pending: Vec<Pending>,
     #[serde(default)]
     pub reports: Vec<Report>,
+    #[serde(default)]
+    trash: Vec<TrashRecord>,
+    #[serde(default)]
+    pub history: Vec<HistoryEntry>,
+    /// Included in the API only for evidence viewers, never in the capture gallery.
+    #[serde(default, skip_deserializing)]
+    pub evidence_captures: Vec<Capture>,
+    /// Only files explicitly selected for permanent deletion; retried after an interrupted cleanup.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pending_file_deletions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrashKind { Todo, Capture, Call }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+enum TrashContent { Todo(Todo), Capture(Capture), Call(CallNote) }
+
+impl TrashContent {
+    fn id(&self) -> &str {
+        match self { Self::Todo(t) => &t.id, Self::Capture(c) => &c.id, Self::Call(c) => &c.id }
+    }
+    fn kind(&self) -> TrashKind {
+        match self { Self::Todo(_) => TrashKind::Todo, Self::Capture(_) => TrashKind::Capture, Self::Call(_) => TrashKind::Call }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TrashRecord {
+    deleted_at: DateTime<Utc>,
+    deleted_by: String,
+    content: TrashContent,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TrashItem {
+    pub id: String,
+    pub kind: TrashKind,
+    pub title: String,
+    pub deleted_at: DateTime<Utc>,
+    pub deleted_by: String,
+    pub original_location: String,
+    pub related_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    pub entity_id: String,
+    pub kind: TrashKind,
+    pub action: String,
+    pub at: DateTime<Utc>,
+    pub actor: String,
+}
+
+fn references(t: &Todo, capture_id: &str) -> bool {
+    t.capture_id == capture_id || t.extra_captures.iter().any(|id| id == capture_id)
+}
+
+fn archived_todos(d: &Data) -> impl Iterator<Item = &Todo> {
+    d.trash.iter().filter_map(|r| match &r.content { TrashContent::Todo(t) => Some(t), _ => None })
+}
+
+fn audit(d: &mut Data, content: &TrashContent, action: &str, at: DateTime<Utc>) {
+    d.history.push(HistoryEntry { entity_id: content.id().into(), kind: content.kind(), action: action.into(), at, actor: "local".into() });
+}
+
+fn archive(d: &mut Data, content: TrashContent) {
+    let at = Utc::now();
+    audit(d, &content, "deleted", at);
+    d.trash.push(TrashRecord { deleted_at: at, deleted_by: "local".into(), content });
 }
 
 /// A weekly work log: the sentences of its 실시항목 and 예정항목 boxes as the user left them.
@@ -306,6 +379,10 @@ pub fn new_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..12].to_string()
 }
 
+fn safe_image_name(image: &str) -> bool {
+    !image.is_empty() && !image.contains(['/', '\\', ':']) && image != "." && image != ".."
+}
+
 // ponytail: one global lock and a full-file rewrite per mutation; fine for a personal todo list.
 pub struct Store {
     data: Mutex<Data>,
@@ -329,20 +406,162 @@ impl Store {
         }
         let store = Self { data: Mutex::new(data), path };
         store.mutate(|_| ())?;
+        // A failed physical cleanup must not make the user's whole database unavailable.
+        // The persisted queue remains for the next explicit purge or restart.
+        let _ = store.cleanup_purged_files();
         Ok(store)
     }
 
     pub fn snapshot(&self) -> Data {
-        self.data.lock().unwrap().clone()
+        let mut data = self.data.lock().unwrap().clone();
+        data.evidence_captures = data.trash.iter().filter_map(|r| match &r.content {
+            TrashContent::Capture(c) if data.todos.iter().chain(data.pending.iter().map(|p| &p.todo)).any(|t| references(t, &c.id)) => Some(c.clone()),
+            _ => None,
+        }).collect();
+        // Deleted bodies are available only through restore, not the ordinary state API.
+        data.trash.clear();
+        data.pending_file_deletions.clear();
+        data
     }
 
     fn mutate<T>(&self, f: impl FnOnce(&mut Data) -> T) -> std::io::Result<T> {
         let mut data = self.data.lock().unwrap();
-        let out = f(&mut data);
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(&*data)?)?;
-        std::fs::rename(&tmp, &self.path)?;
+        let mut next = data.clone();
+        let out = f(&mut next);
+        self.persist(&next)?;
+        *data = next;
         Ok(out)
+    }
+
+    fn persist(&self, data: &Data) -> std::io::Result<()> {
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(data)?)?;
+        std::fs::rename(&tmp, &self.path)
+    }
+
+    /// A hidden capture can still serve as evidence for a surviving task.
+    pub fn capture_image(&self, id: &str) -> Option<String> {
+        let d = self.data.lock().unwrap();
+        d.captures.iter().find(|c| c.id == id).map(|c| c.image.clone()).or_else(|| {
+            if !d.todos.iter().chain(d.pending.iter().map(|p| &p.todo)).any(|t| references(t, id)) { return None; }
+            d.trash.iter().find_map(|r| match &r.content {
+                TrashContent::Capture(c) if c.id == id => Some(c.image.clone()), _ => None,
+            })
+        })
+    }
+
+    pub fn trash_items(&self) -> Vec<TrashItem> {
+        let d = self.data.lock().unwrap();
+        let mut items: Vec<_> = d.trash.iter().map(|r| {
+            let (title, location, related_count) = match &r.content {
+                TrashContent::Todo(t) => (t.title.clone(), if t.parent_id.is_some() { "후속 업무" } else { "할 일" },
+                    usize::from(!t.capture_id.is_empty()) + t.extra_captures.len()),
+                TrashContent::Capture(c) => (format!("캡처 {}", c.created_at.with_timezone(&Local).format("%Y-%m-%d %H:%M")), "캡처 목록",
+                    d.todos.iter().chain(archived_todos(&d)).chain(d.pending.iter().map(|p| &p.todo)).filter(|t| references(t, &c.id)).count()),
+                TrashContent::Call(c) => (if c.who.is_empty() { "통화 메모".into() } else { format!("{} · 통화 메모", c.who) }, "통화 메모", 0),
+            };
+            TrashItem { id: r.content.id().into(), kind: r.content.kind(), title, deleted_at: r.deleted_at,
+                deleted_by: r.deleted_by.clone(), original_location: location.into(), related_count }
+        }).collect();
+        items.sort_by_key(|r| std::cmp::Reverse(r.deleted_at));
+        items
+    }
+
+    /// Moves the stored original back; repeated IDs or retries never create copies.
+    pub fn restore_trash(&self, ids: &[String]) -> std::io::Result<usize> {
+        let selected: HashSet<_> = ids.iter().map(String::as_str).collect();
+        self.mutate(|d| {
+            let mut count = 0;
+            let mut keep = Vec::new();
+            for r in std::mem::take(&mut d.trash) {
+                if !selected.contains(r.content.id()) { keep.push(r); continue; }
+                let exists = match &r.content {
+                    TrashContent::Todo(t) => d.todos.iter().any(|o| o.id == t.id),
+                    TrashContent::Capture(c) => d.captures.iter().any(|o| o.id == c.id),
+                    TrashContent::Call(c) => d.calls.iter().any(|o| o.id == c.id),
+                };
+                if exists { keep.push(r); continue; }
+                audit(d, &r.content, "restored", Utc::now());
+                match r.content {
+                    TrashContent::Todo(t) => d.todos.push(t),
+                    TrashContent::Capture(c) => d.captures.push(c),
+                    TrashContent::Call(c) => d.calls.push(c),
+                }
+                count += 1;
+            }
+            d.trash = keep;
+            count
+        })
+    }
+
+    /// Rejects the whole batch if an image is still evidence for another retained record.
+    pub fn purge_trash(&self, ids: &[String]) -> std::io::Result<usize> {
+        let selected: HashSet<_> = ids.iter().map(String::as_str).collect();
+        let count = {
+            let mut data = self.data.lock().unwrap();
+            for r in data.trash.iter().filter(|r| selected.contains(r.content.id())) {
+                if let TrashContent::Capture(c) = &r.content {
+                    let active = data.todos.iter().chain(data.pending.iter().map(|p| &p.todo));
+                    let retained_trash = archived_todos(&data).filter(|t| !selected.contains(t.id.as_str()));
+                    if active.chain(retained_trash).any(|t| references(t, &c.id)) {
+                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
+                            "다른 업무나 중복 확인 항목에서 사용하는 근거 자료는 영구 삭제할 수 없습니다. 연결된 업무를 유지하려면 해당 캡처를 선택에서 제외해주세요."));
+                    }
+                    if !safe_image_name(&c.image) {
+                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "잘못된 이미지 파일 경로입니다."));
+                    }
+                }
+            }
+            let mut next = data.clone();
+            let mut removed = HashSet::new();
+            next.trash.retain(|r| {
+                if !selected.contains(r.content.id()) { return true; }
+                removed.insert(r.content.id().to_string());
+                if let TrashContent::Capture(c) = &r.content {
+                    // Two records can refer to one file after an import; keep it for surviving captures.
+                    let used_elsewhere = data.captures.iter().any(|other| other.image == c.image)
+                        || data.trash.iter().any(|other| !selected.contains(other.content.id()) && matches!(&other.content, TrashContent::Capture(other) if other.image == c.image));
+                    if !used_elsewhere && !next.pending_file_deletions.contains(&c.image) { next.pending_file_deletions.push(c.image.clone()); }
+                }
+                false
+            });
+            next.history.retain(|h| !removed.contains(&h.entity_id));
+            for t in next.todos.iter_mut().chain(next.pending.iter_mut().map(|p| &mut p.todo)) {
+                if t.parent_id.as_ref().is_some_and(|id| removed.contains(id)) { t.parent_id = None; }
+            }
+            for r in &mut next.trash {
+                if let TrashContent::Todo(t) = &mut r.content {
+                    if t.parent_id.as_ref().is_some_and(|id| removed.contains(id)) { t.parent_id = None; }
+                }
+            }
+            for p in &mut next.pending { p.matches.retain(|m| !removed.contains(&m.todo_id)); }
+            self.persist(&next)?;
+            *data = next;
+            removed.len()
+        };
+        self.cleanup_purged_files().map_err(|e| std::io::Error::new(e.kind(),
+            format!("항목은 영구 삭제됐지만 이미지 파일 정리가 완료되지 않았습니다. 다음 영구 삭제 작업이나 앱 재시작 시 다시 정리합니다. ({e})")))?;
+        Ok(count)
+    }
+
+    fn cleanup_purged_files(&self) -> std::io::Result<()> {
+        let mut data = self.data.lock().unwrap();
+        let images = self.path.parent().unwrap().join("images");
+        for image in &data.pending_file_deletions {
+            if !safe_image_name(image) { return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "잘못된 이미지 파일 경로입니다.")); }
+            match std::fs::remove_file(images.join(image)) {
+                Ok(()) => (),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+                Err(e) => return Err(e),
+            }
+        }
+        if !data.pending_file_deletions.is_empty() {
+            let mut next = data.clone();
+            next.pending_file_deletions.clear();
+            self.persist(&next)?;
+            *data = next;
+        }
+        Ok(())
     }
 
     pub fn create_capture(&self, id: String, image: String) -> std::io::Result<Capture> {
@@ -372,21 +591,14 @@ impl Store {
         })
     }
 
-    /// Removes a finished capture and returns its image file name. Its todos stay, detached as if
-    /// typed in. None when the capture is missing or still in progress.
-    pub fn delete_capture(&self, capture_id: &str) -> std::io::Result<Option<String>> {
+    /// Hides a finished capture without removing its bytes or evidence references.
+    pub fn delete_capture(&self, capture_id: &str) -> std::io::Result<bool> {
         self.mutate(|d| {
-            let i = d.captures.iter().position(|c| c.id == capture_id)?;
-            if matches!(d.captures[i].status, CaptureStatus::Queued | CaptureStatus::Running) {
-                return None;
-            }
-            for t in d.todos.iter_mut().chain(d.pending.iter_mut().map(|p| &mut p.todo)) {
-                if t.capture_id == capture_id {
-                    t.capture_id.clear();
-                }
-                t.extra_captures.retain(|c| c != capture_id);
-            }
-            Some(d.captures.remove(i).image)
+            let Some(i) = d.captures.iter().position(|c| c.id == capture_id) else { return false };
+            if matches!(d.captures[i].status, CaptureStatus::Queued | CaptureStatus::Running) { return false; }
+            let capture = d.captures.remove(i);
+            archive(d, TrashContent::Capture(capture));
+            true
         })
     }
 
@@ -395,11 +607,12 @@ impl Store {
     /// including one earlier in this same result, is held for review. Returns how many were added.
     pub fn complete(&self, capture_id: &str, items: Vec<ExtractedTodo>) -> std::io::Result<u32> {
         self.mutate(|d| {
+            if !d.captures.iter().any(|c| c.id == capture_id) { return 0; }
             let (mut added, mut held) = (0, 0);
             for item in items {
                 let title = item.title.split_whitespace().collect::<Vec<_>>().join(" ");
                 let key = normalize(&title);
-                let mine = d.todos.iter().chain(d.pending.iter().map(|p| &p.todo));
+                let mine = d.todos.iter().chain(d.pending.iter().map(|p| &p.todo)).chain(archived_todos(d));
                 if title.is_empty() || mine.into_iter().any(|t| t.capture_id == capture_id && normalize(&t.title) == key) {
                     continue;
                 }
@@ -498,9 +711,10 @@ impl Store {
 
     pub fn delete_todo(&self, id: &str) -> std::io::Result<bool> {
         self.mutate(|d| {
-            let before = d.todos.len();
-            d.todos.retain(|t| t.id != id);
-            d.todos.len() != before
+            let Some(i) = d.todos.iter().position(|t| t.id == id) else { return false };
+            let todo = d.todos.remove(i);
+            archive(d, TrashContent::Todo(todo));
+            true
         })
     }
 
@@ -540,9 +754,10 @@ impl Store {
 
     pub fn delete_call(&self, id: &str) -> std::io::Result<bool> {
         self.mutate(|d| {
-            let before = d.calls.len();
-            d.calls.retain(|c| c.id != id);
-            d.calls.len() != before
+            let Some(i) = d.calls.iter().position(|c| c.id == id) else { return false };
+            let note = d.calls.remove(i);
+            archive(d, TrashContent::Call(note));
+            true
         })
     }
 }
@@ -569,15 +784,135 @@ mod tests {
     }
 
     #[test]
+    fn trash_round_trip_keeps_original_payload_and_audit_after_restart() {
+        let dir = tmp();
+        let s = Store::open(&dir).unwrap();
+        let t = added(s.add_todo(ExtractedTodo { title: "원래 업무 제목".into(), due: due(10, 1), detail: Some("업무 메모".into()), ..Default::default() }, 3, Some(Repeat::Weekly)).unwrap());
+        s.finish_todo(&t.id, Finish { done_on: due(10, 2).unwrap(), note: "완료 후 작성한 기록".into(), follow_ups: vec![] }).unwrap();
+        let original = s.snapshot().todos.into_iter().find(|o| o.id == t.id).unwrap();
+        assert!(s.delete_todo(&t.id).unwrap());
+        assert!(!s.delete_todo(&t.id).unwrap());
+        assert!(!s.update_todo(&t.id, TodoPatch { title: Some("바뀌면 안 됨".into()), ..Default::default() }).unwrap());
+        assert!(!s.snapshot().todos.iter().any(|o| o.id == t.id));
+        let s = Store::open(&dir).unwrap();
+        let trash = s.trash_items();
+        assert_eq!(trash.len(), 1);
+        assert_eq!(trash[0].title, "원래 업무 제목");
+        assert_eq!(trash[0].deleted_by, "local");
+        assert_eq!(s.restore_trash(&[t.id.clone(), t.id.clone()]).unwrap(), 1);
+        assert_eq!(s.restore_trash(&[t.id.clone()]).unwrap(), 0);
+        let d = s.snapshot();
+        let restored = d.todos.iter().find(|o| o.id == t.id).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), serde_json::to_value(original).unwrap());
+        let history: Vec<_> = d.history.iter().filter(|h| h.entity_id == t.id).collect();
+        assert_eq!(history.len(), 2);
+        assert_eq!((history[0].action.as_str(), history[1].action.as_str()), ("deleted", "restored"));
+        assert!(s.trash_items().is_empty());
+    }
+
+    #[test]
+    fn capture_trash_preserves_shared_evidence_and_bulk_purge_is_atomic() {
+        let dir = tmp();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::write(dir.join("images/a.png"), b"evidence").unwrap();
+        let s = Store::open(&dir).unwrap();
+        let c = s.create_capture(new_id(), "a.png".into()).unwrap();
+        s.complete(&c.id, vec![item("첫째 업무"), item("둘째 약속")]).unwrap();
+        let todos = s.snapshot().todos;
+        assert!(s.delete_capture(&c.id).unwrap());
+        assert_eq!(s.capture_image(&c.id).as_deref(), Some("a.png"));
+        assert_eq!(s.snapshot().evidence_captures.len(), 1);
+        assert!(s.delete_todo(&todos[0].id).unwrap());
+        let selection = [todos[0].id.clone(), c.id.clone()];
+        assert_eq!(s.purge_trash(&selection).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(s.trash_items().len(), 2, "rejected purge must not remove its unrelated selected todo");
+        assert!(dir.join("images/a.png").exists());
+        assert!(s.delete_todo(&todos[1].id).unwrap());
+        assert_eq!(s.purge_trash(&selection).unwrap_err().kind(), std::io::ErrorKind::InvalidInput, "archived work also protects its evidence");
+        assert_eq!(s.purge_trash(&[todos[0].id.clone(), todos[1].id.clone(), c.id.clone()]).unwrap(), 3);
+        assert!(!dir.join("images/a.png").exists());
+        assert!(s.snapshot().history.is_empty());
+        let bytes = std::fs::read_to_string(dir.join("store.json")).unwrap();
+        assert!(!bytes.contains("첫째 업무") && !bytes.contains("둘째 약속"));
+        assert_eq!(s.restore_trash(&selection).unwrap(), 0);
+    }
+
+    #[test]
+    fn todo_purge_keeps_follow_ups_and_captures() {
+        let s = Store::open(&tmp()).unwrap();
+        let c = s.create_capture(new_id(), "a.png".into()).unwrap();
+        s.complete(&c.id, vec![item("보고서 제출")]).unwrap();
+        let parent = s.snapshot().todos[0].id.clone();
+        s.finish_todo(&parent, Finish { done_on: due(11, 1).unwrap(), note: "기록".into(), follow_ups: vec![NewTodo { todo: item("자료 보완"), priority: 1, repeat: None }] }).unwrap();
+        let child = s.snapshot().todos[1].id.clone();
+        s.delete_todo(&child).unwrap();
+        s.delete_todo(&parent).unwrap();
+        assert_eq!(s.purge_trash(&[parent]).unwrap(), 1);
+        assert_eq!(s.restore_trash(&[child.clone()]).unwrap(), 1);
+        let d = s.snapshot();
+        assert_eq!(d.todos[0].id, child);
+        assert!(d.todos[0].parent_id.is_none(), "a permanently missing parent is safely detached");
+        assert_eq!(d.todos[0].capture_id, c.id);
+        assert_eq!(d.captures.len(), 1);
+    }
+
+    #[test]
+    fn purging_one_capture_never_removes_a_shared_image_file() {
+        let dir = tmp();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::write(dir.join("images/shared.png"), b"shared evidence").unwrap();
+        let s = Store::open(&dir).unwrap();
+        let a = s.create_capture(new_id(), "shared.png".into()).unwrap();
+        let b = s.create_capture(new_id(), "shared.png".into()).unwrap();
+        s.complete(&a.id, vec![]).unwrap();
+        s.complete(&b.id, vec![]).unwrap();
+        s.delete_capture(&a.id).unwrap();
+        assert_eq!(s.purge_trash(&[a.id]).unwrap(), 1);
+        assert!(dir.join("images/shared.png").exists());
+        assert_eq!(s.capture_image(&b.id).as_deref(), Some("shared.png"));
+    }
+
+    #[test]
+    fn failed_store_write_does_not_change_live_data() {
+        let dir = tmp();
+        let s = Store::open(&dir).unwrap();
+        let t = added(s.add_todo(item("저장 보장"), 0, None).unwrap());
+        std::fs::create_dir(dir.join("store.json.tmp")).unwrap();
+        assert!(s.delete_todo(&t.id).is_err());
+        assert_eq!(s.snapshot().todos.len(), 1);
+        assert!(s.trash_items().is_empty());
+        assert!(s.snapshot().history.is_empty());
+    }
+
+    #[test]
+    fn explicit_purge_file_cleanup_survives_interruption() {
+        let dir = tmp();
+        std::fs::create_dir_all(dir.join("images/blocked.png")).unwrap();
+        let s = Store::open(&dir).unwrap();
+        let c = s.create_capture(new_id(), "blocked.png".into()).unwrap();
+        s.complete(&c.id, vec![]).unwrap();
+        s.delete_capture(&c.id).unwrap();
+        assert!(s.purge_trash(&[c.id]).is_err(), "a directory in place of a file blocks deletion");
+        assert!(s.trash_items().is_empty(), "the permanent-delete intent has been committed");
+        assert_eq!(s.data.lock().unwrap().pending_file_deletions, vec!["blocked.png"]);
+        std::fs::remove_dir(dir.join("images/blocked.png")).unwrap();
+        std::fs::write(dir.join("images/blocked.png"), b"still pending").unwrap();
+        let s = Store::open(&dir).unwrap();
+        assert!(!dir.join("images/blocked.png").exists());
+        assert!(s.data.lock().unwrap().pending_file_deletions.is_empty());
+    }
+
+    #[test]
     fn delete_capture_keeps_todos_and_refuses_in_progress() {
         let s = Store::open(&tmp()).unwrap();
         let c = s.create_capture(new_id(), "a.png".into()).unwrap();
-        assert_eq!(s.delete_capture(&c.id).unwrap(), None, "queued");
+        assert!(!s.delete_capture(&c.id).unwrap(), "queued");
         s.complete(&c.id, vec![item("보고서 제출")]).unwrap();
-        assert_eq!(s.delete_capture(&c.id).unwrap().as_deref(), Some("a.png"));
+        assert!(s.delete_capture(&c.id).unwrap());
         let d = s.snapshot();
         assert!(d.captures.is_empty());
-        assert_eq!((d.todos.len(), d.todos[0].capture_id.as_str()), (1, ""));
+        assert_eq!((d.todos.len(), d.todos[0].capture_id.as_str()), (1, c.id.as_str()));
+        assert_eq!(d.evidence_captures.len(), 1);
     }
 
     #[test]
@@ -602,7 +937,7 @@ mod tests {
         assert!(s.retry(&c.id).unwrap().is_some(), "a done capture can be analyzed again");
         let gone = s.snapshot().todos.iter().find(|t| t.capture_id == c.id && t.title == "회의 참석").unwrap().id.clone();
         s.delete_todo(&gone).unwrap();
-        assert_eq!(s.complete(&c.id, vec![item("회의 참석")]).unwrap(), 1, "re-analysis restores a deleted todo");
+        assert_eq!(s.complete(&c.id, vec![item("회의 참석")]).unwrap(), 0, "re-analysis never recreates a trashed original");
     }
 
     #[test]
@@ -688,8 +1023,8 @@ mod tests {
         assert!(s.snapshot().pending.is_empty());
         assert!(!s.resolve("nope", Resolve::Keep).unwrap());
 
-        assert!(s.delete_capture(&b.id).unwrap().is_some());
-        assert!(s.snapshot().todos.iter().all(|t| t.extra_captures.is_empty() && t.capture_id != b.id), "deleting a capture unlinks it everywhere");
+        assert!(s.delete_capture(&b.id).unwrap());
+        assert!(s.snapshot().todos.iter().any(|t| references(t, &b.id)), "trashing a capture preserves evidence links");
     }
 
     #[test]

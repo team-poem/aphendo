@@ -82,8 +82,27 @@ export function DuplicateReview({
           {pending.length === 0 && <p className="text-sm text-white/55">확인할 업무가 없습니다.</p>}
           {pending.map((p) => {
             const hasShot = evidenceOf(p.todo).length > 0;
+            const hasListedMatch = p.matches.some((m) => todos.some((t) => t.id === m.todo_id));
             return (
               <section key={p.id} className="rounded-lg border border-white/[0.1] bg-surface">
+                {!hasListedMatch && (
+                  <div className="space-y-3 p-3">
+                    <p className="text-sm text-white/60">비교할 기존 업무가 휴지통으로 이동했거나 삭제됐습니다. 새 업무의 내용을 확인해 추가 여부를 선택해 주세요.</p>
+                    <dl className="space-y-2 text-sm">
+                      {ROWS.map(({ label, show }) => {
+                        const value = show(p.todo);
+                        return value ? <div key={label} className="grid grid-cols-[5rem_minmax(0,1fr)] gap-2">
+                          <dt className="text-xs text-white/50">{label}</dt>
+                          <dd className="whitespace-pre-wrap break-words">{value}</dd>
+                        </div> : null;
+                      })}
+                      <div className="grid grid-cols-[5rem_minmax(0,1fr)] gap-2">
+                        <dt className="text-xs text-white/50">근거</dt>
+                        <dd><Source t={p.todo} captures={captures} onOpen={onOpenCapture} /></dd>
+                      </div>
+                    </dl>
+                  </div>
+                )}
                 {p.matches.map((m) => {
                   const old = todos.find((t) => t.id === m.todo_id);
                   if (!old) return null;
@@ -148,7 +167,7 @@ export function DuplicateReview({
                 })}
                 <div className="flex flex-wrap justify-end gap-2 border-t border-white/[0.08] bg-white/[0.02] p-3">
                   <button type="button" className={cn(btn, "border border-white/[0.15] hover:bg-white/10")} onClick={() => resolve(p.id, { action: "keep" })} title="새 업무를 만들지 않습니다">
-                    기존 업무 유지
+                    {hasListedMatch ? "기존 업무 유지" : "추가하지 않기"}
                   </button>
                   <button type="button" className={cn(btn, "bg-orange-500 text-[#fff] hover:bg-orange-600")} onClick={() => resolve(p.id, { action: "add" })} title="서로 다른 업무로 저장합니다">
                     별도 업무로 추가
