@@ -158,7 +158,8 @@ export function WeeklyReport({ reports }: { reports?: Report[] }) {
   const key = done ? `${done.start}~${done.end}` : "";
 
   const [boxes, setBoxes] = useState<Record<Box, string[]>>({ done: [], planned: [] });
-  const [sources, setSources] = useState<Record<Box, Item[]>>({ done: [], planned: [] });
+  // Null until the first answer, so the "nothing to draft from" notice never flashes on open.
+  const [sources, setSources] = useState<Record<Box, Item[]> | null>(null);
   const [status, setStatus] = useState<{ kind: "idle" | "drafting" | "saving" | "saved" } | { kind: "error"; text: string }>({ kind: "idle" });
   const [askOverwrite, setAskOverwrite] = useState(false);
   const dirty = useRef(false);
@@ -211,6 +212,7 @@ export function WeeklyReport({ reports }: { reports?: Report[] }) {
   }
 
   const hasText = boxes.done.some((l) => l.trim()) || boxes.planned.some((l) => l.trim());
+  const noSources = !!sources && sources.done.length + sources.planned.length === 0;
   // Both spans move together by whole weeks.
   const shift = (days: number) =>
     setSpans((x) => {
@@ -243,16 +245,21 @@ export function WeeklyReport({ reports }: { reports?: Report[] }) {
         </span>
         <button
           type="button"
-          disabled={!period || status.kind === "drafting" || sources.done.length + sources.planned.length === 0}
+          disabled={!period || !sources || noSources || status.kind === "drafting"}
           onClick={() => (hasText ? setAskOverwrite(true) : draft())}
           className={cn(btn, "bg-orange-500 font-medium text-[#fff] hover:bg-orange-600 disabled:opacity-40")}
-          title={sources.done.length + sources.planned.length === 0 ? "이 기간에 바탕이 될 할일이 없습니다" : "실시·예정 할일로 문장 초안을 만듭니다"}
+          title="실시·예정 할일로 문장 초안을 만듭니다"
         >
           <Sparkles size={15} aria-hidden />
           {status.kind === "drafting" ? "작성 중…" : "AI 초안 만들기"}
         </button>
       </div>
       {!period && <p className="text-sm text-red-300 light:text-red-700">날짜를 2026.10.06 형식으로 쓰고, 끝 날짜는 시작 날짜와 같거나 뒤여야 합니다.</p>}
+      {period && noSources && (
+        <p className="text-sm text-white/70">
+          AI 초안을 만들 할일이 없습니다. 실시 기간에 완료한 할일이나, 예정 끝 날짜({spans.planned.end})까지 마감인 미완료 할일이 있어야 합니다. 마감일이 없는 할일은 들어가지 않습니다. 문장 추가로 직접 쓸 수도 있습니다.
+        </p>
+      )}
       {askOverwrite && (
         <div role="alertdialog" aria-label="초안으로 바꾸기" className="flex flex-wrap items-center gap-2 rounded-md border border-orange-500/40 bg-orange-500/10 px-3 py-2 text-sm">
           <span className="flex-1">지금 박스의 문장을 새 초안으로 바꿉니다. 고친 문장도 사라집니다.</span>
@@ -271,7 +278,7 @@ export function WeeklyReport({ reports }: { reports?: Report[] }) {
             box={b}
             dates={<SpanInputs box={b} span={spans[b]} onChange={(sp) => setSpans((x) => ({ ...x, [b]: sp }))} />}
             lines={boxes[b]}
-            sources={sources[b]}
+            sources={sources?.[b] ?? []}
             onChange={(l) => edit(b, l)}
           />
         ))}
