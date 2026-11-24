@@ -243,6 +243,13 @@ mod tests {
     }
 
     #[test]
+    fn a_draft_may_leave_out_an_empty_section() {
+        let r = CallToolResult::structured(json!({"planned": ["보고서 작성 예정"]}));
+        let d: ReportDraft = parse_payload(r, "done/planned").unwrap();
+        assert_eq!(d, ReportDraft { done: vec![], planned: vec!["보고서 작성 예정".into()] });
+    }
+
+    #[test]
     fn rejects_malformed_and_error_results() {
         let bad_date = CallToolResult::structured(json!({"todos": [{"title": "x", "due": "11/05", "detail": null}]}));
         assert!(parse_result(bad_date).unwrap_err().contains("응답 형식 오류"));
