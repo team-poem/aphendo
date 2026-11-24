@@ -71,6 +71,7 @@ export function TodoDetail({
   onFinish,
   onDraft,
   onOpenCapture,
+  parent,
 }: {
   todo: Todo;
   /** Evidence to show beside the form, first one largest. */
@@ -83,6 +84,8 @@ export function TodoDetail({
   /** Hands the filled-in form back instead of saving it. */
   onDraft?: (d: TodoDraft) => void;
   onOpenCapture?: (id: string) => void;
+  /** The todo whose completion added this one, when it still exists. */
+  parent?: Todo;
 }) {
   const [initial] = useState(() => ({ ...todo, due: todo.due ?? "" }));
   const [form, setForm] = useState(initial);
@@ -179,6 +182,11 @@ export function TodoDetail({
           )}
 
           <div className={cn("space-y-3 p-4", imageUrlOf && "md:w-1/2")}>
+            {parent && (
+              <p className="break-words text-xs text-white/50">
+                이전 할일 · <span className="text-white/80">{parent.title}</span>
+              </p>
+            )}
             {FIELDS.map(({ key, label, long }) => (
               <label key={key} className="block text-xs text-white/50">
                 {label}
@@ -187,6 +195,7 @@ export function TodoDetail({
                     rows={2}
                     className={cn(input, "resize-y")}
                     required={key === "title"}
+                    data-autofocus={(onDraft && key === "detail") || undefined}
                     value={form[key] ?? ""}
                     onChange={(e) => setForm({ ...form, [key]: e.target.value })}
                   />
@@ -379,7 +388,7 @@ export function FinishTodo({ todo, captureIds, onClose, onChanged }: { todo: Tod
     </div>
     {drafting && (
       <TodoDetail
-        todo={{ ...todo, id: "", title: "", due: doneOn, detail: null, done: false, done_at: null, done_note: null, priority: 0, repeat: null }}
+        todo={{ ...todo, id: "", due: doneOn, detail: null, done: false, done_at: null, done_note: null, priority: 0, repeat: null }}
         captureIds={captureIds}
         onClose={() => setDrafting(false)}
         onChanged={() => {}}
