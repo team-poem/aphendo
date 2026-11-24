@@ -191,8 +191,9 @@ pub struct ReportItem {
     pub due: Option<NaiveDate>,
 }
 
-/// One sentence per line of the 실시항목 and 예정항목 boxes.
+/// One sentence per line of the 실시항목 and 예정항목 boxes. A section the server leaves out has none.
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct ReportDraft {
     pub done: Vec<String>,
     pub planned: Vec<String>,
