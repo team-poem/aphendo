@@ -180,8 +180,13 @@ export function WeeklyReport({ reports }: { reports?: Report[] }) {
   useEffect(() => {
     if (!period) return;
     fetch(`${API}/api/reports/sources`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(period) })
-      .then((r) => (r.ok ? r.json() : { done: [], planned: [] }))
-      .then(setSources, () => {});
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`할일 목록을 불러오지 못했습니다: ${await r.text()}`);
+        return r.json();
+      })
+      .then(setSources, (e: unknown) =>
+        setStatus({ kind: "error", text: e instanceof TypeError ? "로컬 서버에 연결할 수 없습니다." : String(e instanceof Error ? e.message : e) }),
+      );
   }, [period?.start, period?.end, period?.planned_end]);
 
   // Save shortly after the last edit, or after the 예정 span of a report with sentences changes.
