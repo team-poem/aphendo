@@ -191,8 +191,9 @@ pub struct ReportItem {
     pub due: Option<NaiveDate>,
 }
 
-/// One sentence per line of the 실시항목 and 예정항목 boxes.
+/// One sentence per line of the 실시항목 and 예정항목 boxes. A section the server leaves out has none.
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct ReportDraft {
     pub done: Vec<String>,
     pub planned: Vec<String>,
@@ -240,6 +241,13 @@ mod tests {
             ContentBlock::text(r#"{"todos":[{"title":"회의","due":null,"detail":null}]}"#),
         ]);
         assert_eq!(parse_result(r).unwrap()[0].title, "회의");
+    }
+
+    #[test]
+    fn a_draft_may_leave_out_an_empty_section() {
+        let r = CallToolResult::structured(json!({"planned": ["보고서 작성 예정"]}));
+        let d: ReportDraft = parse_payload(r, "done/planned").unwrap();
+        assert_eq!(d, ReportDraft { done: vec![], planned: vec!["보고서 작성 예정".into()] });
     }
 
     #[test]
